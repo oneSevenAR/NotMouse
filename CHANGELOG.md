@@ -13,5 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Platform-neutral screen-zone generation.
 - Ergonomic keyboard hint generation.
 - Terminal demonstration of a 3-by-3 navigation grid.
+- Fullscreen GTK 4 zone overlay adapter for GNOME.
+- Recursive home-row zone selection with backtracking and cancellation.
 
 [Unreleased]: https://github.com/oneSevenAR/NotMouse/compare/v0.1.0-alpha.1...HEAD
