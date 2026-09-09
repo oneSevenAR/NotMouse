@@ -1,0 +1,11 @@
+[package]
+name = "notmouse-core"
+description = "Platform-neutral interaction model for !mouse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

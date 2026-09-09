@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/notmouse", "crates/notmouse-core"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2024"
+rust-version = "1.91"
+authors = ["oneSevenAR"]
+repository = "https://github.com/oneSevenAR/NotMouse"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
