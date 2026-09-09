@@ -1,0 +1,14 @@
+# Build output
+/target/
+/dist/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+.idea/
+.vscode/
+*.swp
+.DS_Store
