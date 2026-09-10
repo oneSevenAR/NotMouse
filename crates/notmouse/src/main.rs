@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
-use notmouse_core::{Rect, grid};
+use notmouse_core::{Rect, SpatialMatrix2D};
 
 fn main() -> ExitCode {
     let command = std::env::args().nth(1);
@@ -31,7 +31,7 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "!mouse {}\n\nUsage:\n  notmouse overlay    Open the zone overlay\n  notmouse demo       Show the terminal prototype\n  notmouse --version  Show the version",
+        "!mouse {}\n\nUsage:\n  notmouse overlay    Open the 2-stroke spatial matrix overlay\n  notmouse demo       Show the terminal matrix demonstration\n  notmouse --version  Show the version",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -65,22 +65,33 @@ fn overlay_script() -> PathBuf {
 }
 
 fn print_demo() {
-    let zones = grid(
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 1920.0,
-            height: 1080.0,
-        },
-        3,
-        3,
-    );
+    let screen = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+    let matrix = SpatialMatrix2D::new(screen);
+    let macro_zones = matrix.macro_zones();
 
-    println!("!mouse zone prototype — press a hint to choose a region\n");
-    for row in zones.chunks(3) {
+    println!("!mouse 2-Stroke Spatial Matrix Demo");
+    println!("Total reachable target points: {} in 2 keystrokes\n", matrix.all_zones().len());
+
+    println!("Stroke 1: Choose a macro region (home row keys):");
+    for row in macro_zones.chunks(3) {
         println!(
-            "  [ {:^3} ]    [ {:^3} ]    [ {:^3} ]",
-            row[0].hint, row[1].hint, row[2].hint
+            "  [  {:^2}  ]    [  {:^2}  ]    [  {:^2}  ]",
+            row[0].hint.to_uppercase(),
+            row[1].hint.to_uppercase(),
+            row[2].hint.to_uppercase()
         );
     }
+
+    println!("\nStroke 2: Typing 'd' focuses region D and reveals 9 sub-zones:");
+    if let Some(micro_zones) = matrix.micro_zones('d') {
+        for row in micro_zones.chunks(3) {
+            println!(
+                "  [ {:^4} ]    [ {:^4} ]    [ {:^4} ]",
+                row[0].hint.to_uppercase(),
+                row[1].hint.to_uppercase(),
+                row[2].hint.to_uppercase()
+            );
+        }
+    }
+    println!("\nTyping 'k' resolves to 'DK' -> normalized coordinates (X, Y) and fires click.");
 }

@@ -15,5 +15,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Terminal demonstration of a 3-by-3 navigation grid.
 - Fullscreen GTK 4 zone overlay adapter for GNOME.
 - Recursive home-row zone selection with backtracking and cancellation.
+- 2-stroke spatial matrix engine in `notmouse-core` with 81 distinct home-row targets.
+- Interactive 2-stroke overlay adapter in GNOME with simultaneous macro and micro hint previews.
+- Lock & Action mode on second stroke: renders target reticle and stays open for confirmation.
+- Pixel-by-pixel directional nudging (`h j k l` / arrows) with `Shift` acceleration.
+- Dedicated action triggers: `Space`/`Enter` (click), `r` (right-click), `d` (double-click), `v` (drag), `s` (scroll), `Backspace` (undo), and `Esc` (cancel).
 
 [Unreleased]: https://github.com/oneSevenAR/NotMouse/compare/v0.1.0-alpha.1...HEAD

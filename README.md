@@ -16,16 +16,25 @@ Wayland.
 
 ## Try the current prototype
 
-On GNOME with GTK 4 available through GJS, launch the fullscreen zone overlay:
+On GNOME with GTK 4 available through GJS, launch the fullscreen 2-stroke matrix overlay:
 
 ```sh
 cargo run -p notmouse -- overlay
 ```
 
-Use the displayed home-row key to narrow the selected region. `Backspace` moves
-up one level, `Enter` confirms the center of the current region, and `Esc` exits.
+- **Stroke 1:** Press any home-row key (`a s d f j k l g h`) to focus that macro region.
+- **Stroke 2:** Press the second key to lock the target reticle onto that sub-cell.
+- **Actions & Nudge:**
+  - `Space` / `Enter`: Left-click and close
+  - `r`: Right-click and close
+  - `d`: Double-click and close
+  - `v`: Drag lock
+  - `s`: Scroll mode
+  - `h j k l` or arrow keys: Micro-nudge the reticle pixel-by-pixel (hold `Shift` for larger steps)
+  - `Backspace`: Undo last stroke
+  - `Esc`: Cancel
 
-The terminal-only demonstration remains available:
+The terminal matrix demonstration is also available:
 
 ```sh
 cargo run -p notmouse -- demo
