@@ -23,5 +23,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Linux `uinput` virtual pointer backend in `notmouse` supporting absolute positioning, relative motion, button clicks, drag-lock, and wheel scrolling.
 - Direct execution pipeline connecting overlay selection events to hardware mouse events.
 - CLI subcommands for manual testing: `notmouse click <x> <y>` and `notmouse move <x> <y>`.
+- Interactive GTK 4 test bench window (`notmouse test-bench`) for safely observing left, right, middle, double-click, drag, and scroll events in real-time (exits only on `Esc`).
 
 [Unreleased]: https://github.com/oneSevenAR/NotMouse/compare/v0.1.0-alpha.1...HEAD

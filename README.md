@@ -35,6 +35,14 @@ cargo run -p notmouse -- overlay
   - `Backspace`: Undo last stroke
   - `Esc`: Cancel
 
+### Interactive Mouse Event Test Bench
+To safely test clicks, double-clicks, right-clicks, drags, and scrolling without clicking other desktop apps:
+
+```sh
+cargo run -p notmouse -- test-bench
+```
+The test bench stays open persistently and logs all detected events in real-time. Press `Esc` to close it.
+
 The terminal matrix demonstration is also available:
 
 ```sh

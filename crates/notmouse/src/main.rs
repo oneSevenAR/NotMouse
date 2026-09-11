@@ -65,6 +65,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("test-bench") => match launch_test_bench() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("notmouse: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some("--version" | "-V") => {
             println!("notmouse {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -78,7 +85,7 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "!mouse {}\n\nUsage:\n  notmouse overlay        Open the 2-stroke spatial matrix overlay and perform action\n  notmouse click <x> <y>  Move to normalized (x, y) and left-click\n  notmouse move <x> <y>   Move to normalized (x, y)\n  notmouse demo           Show the terminal matrix demonstration\n  notmouse --version      Show the version",
+        "!mouse {}\n\nUsage:\n  notmouse overlay        Open the 2-stroke spatial matrix overlay and perform action\n  notmouse test-bench     Open the interactive mouse event playground (Esc to exit)\n  notmouse click <x> <y>  Move to normalized (x, y) and left-click\n  notmouse move <x> <y>   Move to normalized (x, y)\n  notmouse demo           Show the terminal matrix demonstration\n  notmouse --version      Show the version",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -221,6 +228,34 @@ fn overlay_script() -> PathBuf {
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../platform/linux/gnome/overlay.js"),
         PathBuf::from,
     )
+}
+
+fn test_bench_script() -> PathBuf {
+    std::env::var_os("NOTMOUSE_TEST_BENCH_SCRIPT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../platform/linux/gnome/test_bench.js"),
+        PathBuf::from,
+    )
+}
+
+fn launch_test_bench() -> Result<(), String> {
+    let script = test_bench_script();
+    if !script.is_file() {
+        return Err(format!(
+            "test bench script was not found at {}",
+            script.display()
+        ));
+    }
+
+    let status = Command::new("gjs")
+        .arg(script)
+        .status()
+        .map_err(|error| format!("could not start the test bench: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("the test bench exited with {status}"))
+    }
 }
 
 fn print_demo() {
