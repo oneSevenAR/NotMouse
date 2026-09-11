@@ -1,18 +1,19 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
 use std::time::Duration;
 
 mod input;
+mod session;
 
 use input::{InputDevice, MouseButton};
 use notmouse_core::{Rect, SpatialMatrix2D};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
-enum OverlayEvent {
+pub enum OverlayEvent {
     Selected {
         strokes: String,
         action: String,
@@ -37,12 +38,13 @@ enum OverlayEvent {
         normalized: Option<NormalizedPoint>,
     },
     Cancelled,
+    Shutdown,
 }
 
-#[derive(Debug, Deserialize)]
-struct NormalizedPoint {
-    x: f64,
-    y: f64,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NormalizedPoint {
+    pub x: f64,
+    pub y: f64,
 }
 
 fn main() -> ExitCode {
@@ -54,6 +56,13 @@ fn main() -> ExitCode {
             print_demo();
             ExitCode::SUCCESS
         }
+        Some("daemon") => match run_daemon() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("notmouse: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some("overlay") => match launch_overlay() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -122,12 +131,42 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "!mouse {}\n\nUsage:\n  notmouse playground          Open test bench and overlay together in one command\n  notmouse overlay             Open the 2-stroke spatial matrix overlay and perform action\n  notmouse test-bench          Open the interactive test bench window alone (Esc to exit)\n  notmouse click <x> <y>       Move to normalized (x, y) and left-click\n  notmouse move <x> <y>        Move to normalized (x, y)\n  notmouse scroll <dy> [x] [y] Scroll vertically (negative=down, positive=up)\n  notmouse demo                Show the terminal matrix demonstration\n  notmouse --version           Show the version",
+        "!mouse {}\n\nUsage:\n  notmouse playground          Open test bench and overlay together (warm session)\n  notmouse daemon              Run the persistent input session daemon in the background\n  notmouse overlay             Open the 2-stroke spatial matrix overlay and perform action\n  notmouse test-bench          Open the interactive test bench window alone (Esc to exit)\n  notmouse click <x> <y>       Move to normalized (x, y) and left-click\n  notmouse move <x> <y>        Move to normalized (x, y)\n  notmouse scroll <dy> [x] [y] Scroll vertically (negative=down, positive=up)\n  notmouse demo                Show the terminal matrix demonstration\n  notmouse --version           Show the version",
         env!("CARGO_PKG_VERSION")
     );
 }
 
+fn run_daemon() -> Result<(), String> {
+    if session::try_connect().is_some() {
+        return Err(format!(
+            "a !mouse resident daemon is already running on {}",
+            session::socket_path().display()
+        ));
+    }
+
+    println!("!mouse: initializing persistent virtual input device...");
+    let device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
+    let path = session::socket_path();
+    let _server = session::start_server(device)?;
+
+    println!("!mouse: resident daemon ready (listening on {})", path.display());
+    println!("!mouse: compositor binding warm and permanent. Press Ctrl+C to terminate.");
+
+    loop {
+        thread::sleep(Duration::from_secs(3600));
+    }
+}
+
 fn click_at(x: f64, y: f64) -> Result<(), String> {
+    let event = OverlayEvent::Click {
+        button: "left".into(),
+        normalized: Some(NormalizedPoint { x, y }),
+    };
+    if session::send_event(&event).unwrap_or(false) {
+        println!("!mouse: click at ({x:.3}, {y:.3}) dispatched to resident session");
+        return Ok(());
+    }
+
     let mut device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
     println!("!mouse: moving to ({x:.3}, {y:.3}) and clicking");
     device
@@ -142,6 +181,12 @@ fn click_at(x: f64, y: f64) -> Result<(), String> {
 }
 
 fn move_to(x: f64, y: f64) -> Result<(), String> {
+    let event = OverlayEvent::Move { x, y };
+    if session::send_event(&event).unwrap_or(false) {
+        println!("!mouse: move to ({x:.3}, {y:.3}) dispatched to resident session");
+        return Ok(());
+    }
+
     let mut device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
     println!("!mouse: moving to ({x:.3}, {y:.3})");
     device
@@ -152,6 +197,29 @@ fn move_to(x: f64, y: f64) -> Result<(), String> {
 }
 
 fn scroll_at(steps_y: i32, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+    if let (Some(x), Some(y)) = (x, y) {
+        let move_evt = OverlayEvent::Move { x, y };
+        let scroll_evt = OverlayEvent::Scroll {
+            dx: 0,
+            dy: steps_y,
+        };
+        if session::send_event(&move_evt).unwrap_or(false) {
+            thread::sleep(Duration::from_millis(50));
+            let _ = session::send_event(&scroll_evt);
+            println!("!mouse: scroll at ({x:.3}, {y:.3}) dispatched to resident session");
+            return Ok(());
+        }
+    } else {
+        let scroll_evt = OverlayEvent::Scroll {
+            dx: 0,
+            dy: steps_y,
+        };
+        if session::send_event(&scroll_evt).unwrap_or(false) {
+            println!("!mouse: scroll {steps_y} steps dispatched to resident session");
+            return Ok(());
+        }
+    }
+
     let mut device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
     if let (Some(x), Some(y)) = (x, y) {
         println!("!mouse: moving to ({x:.3}, {y:.3}) and scrolling {steps_y} steps");
@@ -178,7 +246,47 @@ fn launch_overlay() -> Result<(), String> {
         ));
     }
 
-    // Initialize virtual input device before launching overlay
+    if let Some(mut stream) = session::try_connect() {
+        // Fast path: resident session active! Instant overlay launch with zero device churn!
+        let mut child = Command::new("gjs")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("could not start the GNOME overlay adapter: {error}"))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "could not capture overlay stdout".to_string())?;
+
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let line = line.map_err(|e| format!("reading overlay stdout failed: {e}"))?;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with('{') {
+                let _ = writeln!(stream, "{trimmed}");
+                let _ = stream.flush();
+            } else {
+                println!("{trimmed}");
+            }
+        }
+
+        let status = child
+            .wait()
+            .map_err(|err| format!("failed to wait on overlay process: {err}"))?;
+
+        if !status.success() {
+            return Err(format!("the overlay adapter exited with {status}"));
+        }
+
+        return Ok(());
+    }
+
+    // Standalone fallback: no resident daemon running
+    println!("!mouse: [notice] starting standalone input device (run 'notmouse playground' or 'notmouse daemon' for zero latency)");
     let mut device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
 
     let mut child = Command::new("gjs")
@@ -197,56 +305,18 @@ fn launch_overlay() -> Result<(), String> {
 
     for line in reader.lines() {
         let line = line.map_err(|e| format!("reading overlay stdout failed: {e}"))?;
-        if let Ok(event) = serde_json::from_str::<OverlayEvent>(&line) {
-            match event {
-                OverlayEvent::Move { x, y } => {
-                    if let Err(err) = device.move_to_normalized(x, y) {
-                        eprintln!("!mouse: live move failed: {err}");
-                    }
-                    thread::sleep(Duration::from_millis(30));
-                }
-                OverlayEvent::Scroll { dx, dy } => {
-                    if let Err(err) = device.scroll(dy, dx) {
-                        eprintln!("!mouse: live scroll failed: {err}");
-                    }
-                }
-                OverlayEvent::Press { button } => {
-                    let btn = parse_button(&button);
-                    if let Err(err) = device.press(btn) {
-                        eprintln!("!mouse: live press failed: {err}");
-                    }
-                }
-                OverlayEvent::Release { button } => {
-                    let btn = parse_button(&button);
-                    if let Err(err) = device.release(btn) {
-                        eprintln!("!mouse: live release failed: {err}");
-                    }
-                }
-                OverlayEvent::Click { button, normalized } => {
-                    if let Some(ref p) = normalized {
-                        let _ = device.move_to_normalized(p.x, p.y);
-                        thread::sleep(Duration::from_millis(30));
-                    }
-                    if button == "double" || button == "double-click" {
-                        let _ = device.double_click(MouseButton::Left);
-                    } else {
-                        let btn = parse_button(&button);
-                        let _ = device.click(btn);
-                    }
-                }
-                OverlayEvent::Selected {
-                    strokes,
-                    action,
-                    normalized,
-                } => {
-                    selected_event = Some((strokes, action, normalized));
-                }
-                OverlayEvent::Cancelled => {
-                    println!("!mouse: session cancelled");
-                }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(event) = serde_json::from_str::<OverlayEvent>(trimmed) {
+            if let OverlayEvent::Selected { .. } = event {
+                selected_event = Some(event);
+            } else {
+                let _ = session::execute_event(&mut device, &event);
             }
-        } else if !line.trim().is_empty() {
-            println!("{line}");
+        } else {
+            println!("{trimmed}");
         }
     }
 
@@ -258,73 +328,11 @@ fn launch_overlay() -> Result<(), String> {
         return Err(format!("the overlay adapter exited with {status}"));
     }
 
-    if let Some((strokes, action, point)) = selected_event {
-        // Wait briefly for Mutter to unmap the overlay and focus the window beneath
-        thread::sleep(Duration::from_millis(120));
-
-        println!(
-            "!mouse: applying action '{action}' at ({:.3}, {:.3}) (strokes: {strokes})",
-            point.x, point.y
-        );
-
-        device
-            .move_to_normalized(point.x, point.y)
-            .map_err(|err| format!("failed to move pointer: {err}"))?;
-
-        // Give compositor brief moment to settle pointer position before button dispatch
-        thread::sleep(Duration::from_millis(50));
-
-        execute_action(&mut device, &action)?;
-
-        // Give compositor time to process release event before device teardown
-        thread::sleep(Duration::from_millis(350));
+    if let Some(selected) = selected_event {
+        let _ = session::execute_event(&mut device, &selected);
     }
 
     Ok(())
-}
-
-fn parse_button(name: &str) -> MouseButton {
-    match name {
-        "right" | "right-click" => MouseButton::Right,
-        "middle" | "middle-click" => MouseButton::Middle,
-        _ => MouseButton::Left,
-    }
-}
-
-fn execute_action(device: &mut InputDevice, action: &str) -> Result<(), String> {
-    match action {
-        "click" => device
-            .click(MouseButton::Left)
-            .map_err(|err| format!("click failed: {err}")),
-        "right-click" => device
-            .click(MouseButton::Right)
-            .map_err(|err| format!("right-click failed: {err}")),
-        "double-click" => device
-            .double_click(MouseButton::Left)
-            .map_err(|err| format!("double-click failed: {err}")),
-        "middle-click" => device
-            .click(MouseButton::Middle)
-            .map_err(|err| format!("middle-click failed: {err}")),
-        "drag" => {
-            device
-                .press(MouseButton::Left)
-                .map_err(|err| format!("drag failed: {err}"))?;
-            println!("!mouse: drag engaged (Left button held down)");
-            Ok(())
-        }
-        "scroll" | "scroll-down" => device
-            .scroll(-5, 0)
-            .map_err(|err| format!("scroll failed: {err}")),
-        "scroll-up" => device
-            .scroll(5, 0)
-            .map_err(|err| format!("scroll failed: {err}")),
-        other => {
-            eprintln!("!mouse: unrecognized action '{other}', performing left-click");
-            device
-                .click(MouseButton::Left)
-                .map_err(|err| format!("click failed: {err}"))
-        }
-    }
 }
 
 fn overlay_script() -> PathBuf {
@@ -375,6 +383,24 @@ fn launch_playground() -> Result<(), String> {
             script.display()
         ));
     }
+
+    // Keep persistent resident session warm for entire playground lifetime
+    let _server_guard = if session::try_connect().is_none() {
+        println!("!mouse: initializing persistent virtual input device (warm session)...");
+        let device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
+        let server = session::start_server(device)?;
+        println!(
+            "!mouse: persistent session active on {}",
+            session::socket_path().display()
+        );
+        Some(server)
+    } else {
+        println!(
+            "!mouse: using active persistent session on {}",
+            session::socket_path().display()
+        );
+        None
+    };
 
     println!("!mouse: launching interactive test bench...");
     let mut cmd = Command::new("gjs");

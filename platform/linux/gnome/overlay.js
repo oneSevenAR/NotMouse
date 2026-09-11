@@ -159,7 +159,7 @@ function drawOverlay(area, context, width, height, state) {
         context.rectangle(barX, barY, barWidth, barHeight);
         context.stroke();
 
-        const hudText = '📜 SCROLL MODE  •  [j / s / ↓] Down  •  [k / w / ↑] Up  •  [d / u] Page  •  [Shift] Faster  •  [Tab] Grid  •  [Esc / Space] Exit';
+        const hudText = '📜 SCROLL MODE  •  [j / s / ↓] Down  •  [k / w / ↑] Up  •  [d / u] Page  •  [Shift] Faster  •  [Tab] Grid  •  [Enter] Click  •  [Esc] Exit';
         const hudLayout = area.create_pango_layout(hudText);
         hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 12'));
         const [textW, textH] = hudLayout.get_pixel_size();
@@ -401,7 +401,21 @@ function runOverlay() {
             if (state.mode === 'scroll') {
                 const mult = isShift ? 3 : 1;
 
-                if (keyval === Gdk.KEY_Escape || keyval === Gdk.KEY_space || keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || char === 'q') {
+                if (keyval === Gdk.KEY_Escape || char === 'q') {
+                    application.quit();
+                    return true;
+                }
+
+                if (keyval === Gdk.KEY_space || keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter) {
+                    const target = state.point || {
+                        x: state.rect.x + state.rect.width / 2,
+                        y: state.rect.y + state.rect.height / 2,
+                    };
+                    print(JSON.stringify({
+                        event: 'click',
+                        button: isShift ? 'right' : 'left',
+                        normalized: { x: target.x, y: target.y },
+                    }));
                     application.quit();
                     return true;
                 }
@@ -577,9 +591,6 @@ function runOverlay() {
                         x: state.rect.x + state.rect.width / 2,
                         y: state.rect.y + state.rect.height / 2,
                     };
-                    state.point = target;
-                    print(JSON.stringify({ event: 'move', x: target.x, y: target.y }));
-
                     const surface = window.get_surface();
                     if (surface) {
                         surface.set_input_region(new Cairo.Region());
@@ -589,9 +600,11 @@ function runOverlay() {
                     state.lastScrollDir = isUp ? 'up' : 'down';
                     drawingArea.queue_draw();
 
-                    // Delay initial scroll slightly so Mutter commits empty input region and updates pointer focus
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
+                    // Delay slightly so Mutter commits empty input region, then emit pointer motion
+                    // so Mutter transfers pointer focus to the underlying window, followed by initial scroll!
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
                         if (state.mode === 'scroll') {
+                            print(JSON.stringify({ event: 'move', x: target.x, y: target.y }));
                             print(JSON.stringify({ event: 'scroll', dx: 0, dy: isUp ? 5 : -5 }));
                         }
                         return GLib.SOURCE_REMOVE;

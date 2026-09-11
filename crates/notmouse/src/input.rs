@@ -230,19 +230,27 @@ impl InputDevice {
 
 /// Waits for the Wayland compositor / seat manager to open the newly-created device node.
 fn wait_for_compositor_binding(dev: &mut VirtualDevice) {
-    let node_path = match dev.enumerate_dev_nodes_blocking() {
-        Ok(mut nodes) => nodes.next().and_then(Result::ok),
-        Err(_) => None,
-    };
+    let start_node = std::time::Instant::now();
+    let mut node_path = None;
+
+    // Retry discovering dev node for up to 1.5 seconds in case sysfs entry is delayed
+    while start_node.elapsed() < Duration::from_millis(1500) {
+        if let Ok(mut nodes) = dev.enumerate_dev_nodes_blocking() {
+            if let Some(Ok(path)) = nodes.next() {
+                node_path = Some(path);
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(40));
+    }
 
     if let Some(path) = node_path {
         let start = std::time::Instant::now();
         let my_pid = std::process::id().to_string();
 
-        while start.elapsed() < Duration::from_millis(3000) {
+        while start.elapsed() < Duration::from_millis(5000) {
             if let Ok(output) = std::process::Command::new("fuser").arg(&path).output() {
-                let is_success = output.status.success();
-                if is_success {
+                if output.status.success() {
                     let holders = String::from_utf8_lossy(&output.stdout);
                     // Check if the compositor / seat manager has opened the device node
                     let has_compositor = holders
@@ -260,7 +268,7 @@ fn wait_for_compositor_binding(dev: &mut VirtualDevice) {
     }
 
     // Fallback if dev node or fuser is unavailable
-    thread::sleep(Duration::from_millis(800));
+    thread::sleep(Duration::from_millis(1000));
 }
 
 fn is_compositor_pid(pid: &str) -> bool {
