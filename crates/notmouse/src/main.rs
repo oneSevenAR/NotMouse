@@ -18,6 +18,24 @@ enum OverlayEvent {
         action: String,
         normalized: NormalizedPoint,
     },
+    Move {
+        x: f64,
+        y: f64,
+    },
+    Scroll {
+        dx: i32,
+        dy: i32,
+    },
+    Press {
+        button: String,
+    },
+    Release {
+        button: String,
+    },
+    Click {
+        button: String,
+        normalized: Option<NormalizedPoint>,
+    },
     Cancelled,
 }
 
@@ -65,6 +83,18 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("scroll") => {
+            let steps_y: i32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(-3);
+            let x: Option<f64> = args.next().and_then(|s| s.parse().ok());
+            let y: Option<f64> = args.next().and_then(|s| s.parse().ok());
+            match scroll_at(steps_y, x, y) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("notmouse: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("playground" | "test") => match launch_playground() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -92,7 +122,7 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "!mouse {}\n\nUsage:\n  notmouse playground     Open test bench and overlay together in one command\n  notmouse overlay        Open the 2-stroke spatial matrix overlay and perform action\n  notmouse test-bench     Open the interactive test bench window alone (Esc to exit)\n  notmouse click <x> <y>  Move to normalized (x, y) and left-click\n  notmouse move <x> <y>   Move to normalized (x, y)\n  notmouse demo           Show the terminal matrix demonstration\n  notmouse --version      Show the version",
+        "!mouse {}\n\nUsage:\n  notmouse playground          Open test bench and overlay together in one command\n  notmouse overlay             Open the 2-stroke spatial matrix overlay and perform action\n  notmouse test-bench          Open the interactive test bench window alone (Esc to exit)\n  notmouse click <x> <y>       Move to normalized (x, y) and left-click\n  notmouse move <x> <y>        Move to normalized (x, y)\n  notmouse scroll <dy> [x] [y] Scroll vertically (negative=down, positive=up)\n  notmouse demo                Show the terminal matrix demonstration\n  notmouse --version           Show the version",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -103,10 +133,11 @@ fn click_at(x: f64, y: f64) -> Result<(), String> {
     device
         .move_to_normalized(x, y)
         .map_err(|err| format!("move failed: {err}"))?;
-    thread::sleep(Duration::from_millis(20));
+    thread::sleep(Duration::from_millis(50));
     device
         .click(MouseButton::Left)
         .map_err(|err| format!("click failed: {err}"))?;
+    thread::sleep(Duration::from_millis(350));
     Ok(())
 }
 
@@ -116,6 +147,25 @@ fn move_to(x: f64, y: f64) -> Result<(), String> {
     device
         .move_to_normalized(x, y)
         .map_err(|err| format!("move failed: {err}"))?;
+    thread::sleep(Duration::from_millis(350));
+    Ok(())
+}
+
+fn scroll_at(steps_y: i32, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+    let mut device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
+    if let (Some(x), Some(y)) = (x, y) {
+        println!("!mouse: moving to ({x:.3}, {y:.3}) and scrolling {steps_y} steps");
+        device
+            .move_to_normalized(x, y)
+            .map_err(|err| format!("move failed: {err}"))?;
+        thread::sleep(Duration::from_millis(50));
+    } else {
+        println!("!mouse: scrolling {steps_y} steps");
+    }
+    device
+        .scroll(steps_y, 0)
+        .map_err(|err| format!("scroll failed: {err}"))?;
+    thread::sleep(Duration::from_millis(350));
     Ok(())
 }
 
@@ -149,6 +199,41 @@ fn launch_overlay() -> Result<(), String> {
         let line = line.map_err(|e| format!("reading overlay stdout failed: {e}"))?;
         if let Ok(event) = serde_json::from_str::<OverlayEvent>(&line) {
             match event {
+                OverlayEvent::Move { x, y } => {
+                    if let Err(err) = device.move_to_normalized(x, y) {
+                        eprintln!("!mouse: live move failed: {err}");
+                    }
+                    thread::sleep(Duration::from_millis(30));
+                }
+                OverlayEvent::Scroll { dx, dy } => {
+                    if let Err(err) = device.scroll(dy, dx) {
+                        eprintln!("!mouse: live scroll failed: {err}");
+                    }
+                }
+                OverlayEvent::Press { button } => {
+                    let btn = parse_button(&button);
+                    if let Err(err) = device.press(btn) {
+                        eprintln!("!mouse: live press failed: {err}");
+                    }
+                }
+                OverlayEvent::Release { button } => {
+                    let btn = parse_button(&button);
+                    if let Err(err) = device.release(btn) {
+                        eprintln!("!mouse: live release failed: {err}");
+                    }
+                }
+                OverlayEvent::Click { button, normalized } => {
+                    if let Some(ref p) = normalized {
+                        let _ = device.move_to_normalized(p.x, p.y);
+                        thread::sleep(Duration::from_millis(30));
+                    }
+                    if button == "double" || button == "double-click" {
+                        let _ = device.double_click(MouseButton::Left);
+                    } else {
+                        let btn = parse_button(&button);
+                        let _ = device.click(btn);
+                    }
+                }
                 OverlayEvent::Selected {
                     strokes,
                     action,
@@ -157,7 +242,7 @@ fn launch_overlay() -> Result<(), String> {
                     selected_event = Some((strokes, action, normalized));
                 }
                 OverlayEvent::Cancelled => {
-                    println!("!mouse: selection cancelled");
+                    println!("!mouse: session cancelled");
                 }
             }
         } else if !line.trim().is_empty() {
@@ -174,6 +259,9 @@ fn launch_overlay() -> Result<(), String> {
     }
 
     if let Some((strokes, action, point)) = selected_event {
+        // Wait briefly for Mutter to unmap the overlay and focus the window beneath
+        thread::sleep(Duration::from_millis(120));
+
         println!(
             "!mouse: applying action '{action}' at ({:.3}, {:.3}) (strokes: {strokes})",
             point.x, point.y
@@ -184,50 +272,59 @@ fn launch_overlay() -> Result<(), String> {
             .map_err(|err| format!("failed to move pointer: {err}"))?;
 
         // Give compositor brief moment to settle pointer position before button dispatch
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(50));
 
-        match action.as_str() {
-            "click" => {
-                device
-                    .click(MouseButton::Left)
-                    .map_err(|err| format!("click failed: {err}"))?;
-            }
-            "right-click" => {
-                device
-                    .click(MouseButton::Right)
-                    .map_err(|err| format!("right-click failed: {err}"))?;
-            }
-            "double-click" => {
-                device
-                    .double_click(MouseButton::Left)
-                    .map_err(|err| format!("double-click failed: {err}"))?;
-            }
-            "middle-click" => {
-                device
-                    .click(MouseButton::Middle)
-                    .map_err(|err| format!("middle-click failed: {err}"))?;
-            }
-            "drag" => {
-                device
-                    .press(MouseButton::Left)
-                    .map_err(|err| format!("drag failed: {err}"))?;
-                println!("!mouse: drag engaged (Left button held down)");
-            }
-            "scroll" => {
-                device
-                    .scroll(-3, 0)
-                    .map_err(|err| format!("scroll failed: {err}"))?;
-            }
-            other => {
-                eprintln!("!mouse: unrecognized action '{other}', performing left-click");
-                device
-                    .click(MouseButton::Left)
-                    .map_err(|err| format!("click failed: {err}"))?;
-            }
-        }
+        execute_action(&mut device, &action)?;
+
+        // Give compositor time to process release event before device teardown
+        thread::sleep(Duration::from_millis(350));
     }
 
     Ok(())
+}
+
+fn parse_button(name: &str) -> MouseButton {
+    match name {
+        "right" | "right-click" => MouseButton::Right,
+        "middle" | "middle-click" => MouseButton::Middle,
+        _ => MouseButton::Left,
+    }
+}
+
+fn execute_action(device: &mut InputDevice, action: &str) -> Result<(), String> {
+    match action {
+        "click" => device
+            .click(MouseButton::Left)
+            .map_err(|err| format!("click failed: {err}")),
+        "right-click" => device
+            .click(MouseButton::Right)
+            .map_err(|err| format!("right-click failed: {err}")),
+        "double-click" => device
+            .double_click(MouseButton::Left)
+            .map_err(|err| format!("double-click failed: {err}")),
+        "middle-click" => device
+            .click(MouseButton::Middle)
+            .map_err(|err| format!("middle-click failed: {err}")),
+        "drag" => {
+            device
+                .press(MouseButton::Left)
+                .map_err(|err| format!("drag failed: {err}"))?;
+            println!("!mouse: drag engaged (Left button held down)");
+            Ok(())
+        }
+        "scroll" | "scroll-down" => device
+            .scroll(-5, 0)
+            .map_err(|err| format!("scroll failed: {err}")),
+        "scroll-up" => device
+            .scroll(5, 0)
+            .map_err(|err| format!("scroll failed: {err}")),
+        other => {
+            eprintln!("!mouse: unrecognized action '{other}', performing left-click");
+            device
+                .click(MouseButton::Left)
+                .map_err(|err| format!("click failed: {err}"))
+        }
+    }
 }
 
 fn overlay_script() -> PathBuf {
@@ -338,4 +435,22 @@ fn print_demo() {
         }
     }
     println!("\nTyping 'k' resolves to 'DK' -> normalized coordinates (X, Y) and fires click.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_input_device_dev_nodes() {
+        let mut dev = InputDevice::new().expect("device creation should succeed");
+        // test dev node discovery
+        let path = dev.device.get_syspath();
+        println!("Syspath: {path:?}");
+        if let Ok(mut nodes) = dev.device.enumerate_dev_nodes_blocking() {
+            while let Some(Ok(node)) = nodes.next() {
+                println!("Node: {node:?}");
+            }
+        }
+    }
 }

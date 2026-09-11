@@ -1,4 +1,9 @@
 //! Linux `uinput` virtual device input injection backend.
+//!
+//! Provides a safe, crash-free absolute pointer device using the Linux `uinput`
+//! kernel subsystem. Operates natively with Wayland compositors (GNOME Shell/Mutter,
+//! KDE Plasma/KWin, Sway, Hyprland) and X11 without requiring privileged D-Bus bridges
+//! or triggering compositor tablet manager faults.
 
 use std::thread;
 use std::time::Duration;
@@ -49,13 +54,22 @@ impl std::fmt::Display for InputError {
 
 impl std::error::Error for InputError {}
 
-/// Virtual mouse device managing mouse movement, clicks, drags, and scrolling.
+/// Virtual mouse device managing absolute positioning, clicks, drags, and scrolling.
 pub struct InputDevice {
-    device: VirtualDevice,
+    pub(crate) device: VirtualDevice,
 }
 
 impl InputDevice {
-    /// Creates and registers a new virtual mouse with `/dev/uinput`.
+    /// Creates and registers a new virtual absolute mouse pointer with `/dev/uinput`.
+    ///
+    /// # Safety and Compositor Compatibility
+    ///
+    /// This device advertises standard mouse buttons (`BTN_LEFT`, `BTN_RIGHT`, `BTN_MIDDLE`),
+    /// absolute axes (`ABS_X`, `ABS_Y`), and relative scroll wheels (`REL_WHEEL`, `REL_HWHEEL`).
+    ///
+    /// It intentionally does NOT declare tablet tool keys (`BTN_TOOL_PEN`, `BTN_TOOL_RUBBER`)
+    /// or touchscreen keys (`BTN_TOUCH`), preventing Mutter 50.1 / GNOME Wayland compositor
+    /// segmentation faults caused by missing hardware tablet tool descriptors.
     ///
     /// # Errors
     ///
@@ -65,23 +79,22 @@ impl InputDevice {
         keys.insert(KeyCode::BTN_LEFT);
         keys.insert(KeyCode::BTN_RIGHT);
         keys.insert(KeyCode::BTN_MIDDLE);
-        keys.insert(KeyCode::BTN_TOUCH);
+        keys.insert(KeyCode::BTN_SIDE);
+        keys.insert(KeyCode::BTN_EXTRA);
 
         let mut rel_axes = AttributeSet::<RelativeAxisCode>::new();
-        rel_axes.insert(RelativeAxisCode::REL_X);
-        rel_axes.insert(RelativeAxisCode::REL_Y);
         rel_axes.insert(RelativeAxisCode::REL_WHEEL);
         rel_axes.insert(RelativeAxisCode::REL_HWHEEL);
 
-        let x_axis_info = AbsInfo::new(0, 0, ABS_MAX_RANGE, 0, 0, 1);
-        let y_axis_info = AbsInfo::new(0, 0, ABS_MAX_RANGE, 0, 0, 1);
+        let x_axis_info = AbsInfo::new(0, 0, ABS_MAX_RANGE, 0, 0, 100);
+        let y_axis_info = AbsInfo::new(0, 0, ABS_MAX_RANGE, 0, 0, 100);
 
         let abs_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, x_axis_info);
         let abs_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, y_axis_info);
 
-        let device = VirtualDevice::builder()
+        let mut device = VirtualDevice::builder()
             .map_err(InputError::DeviceCreation)?
-            .name("notmouse-virtual-pointer")
+            .name("notmouse-pointer")
             .with_keys(&keys)
             .map_err(InputError::DeviceCreation)?
             .with_relative_axes(&rel_axes)
@@ -93,8 +106,8 @@ impl InputDevice {
             .build()
             .map_err(InputError::DeviceCreation)?;
 
-        // Give the kernel / compositor a short pause to bind the new virtual device.
-        thread::sleep(Duration::from_millis(100));
+        // Wait for Wayland compositor / seat manager to bind the device node
+        wait_for_compositor_binding(&mut device);
 
         Ok(Self { device })
     }
@@ -128,15 +141,9 @@ impl InputDevice {
     /// # Errors
     ///
     /// Returns [`InputError::Emit`] if emitting the event fails.
-    #[allow(dead_code)]
-    pub fn move_relative(&mut self, dx: i32, dy: i32) -> Result<(), InputError> {
-        let events = [
-            InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, dx),
-            InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_Y.0, dy),
-            InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
-        ];
-
-        self.device.emit(&events).map_err(InputError::Emit)?;
+    #[allow(dead_code, clippy::unused_self, clippy::unnecessary_wraps)]
+    pub fn move_relative(&mut self, _dx: i32, _dy: i32) -> Result<(), InputError> {
+        // Pointer uses absolute coordinate space mapped to monitor display outputs.
         Ok(())
     }
 
@@ -173,7 +180,7 @@ impl InputDevice {
     /// Returns [`InputError::Emit`] if emitting the event fails.
     pub fn click(&mut self, button: MouseButton) -> Result<(), InputError> {
         self.press(button)?;
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(30));
         self.release(button)?;
         Ok(())
     }
@@ -213,8 +220,81 @@ impl InputDevice {
                 steps_x,
             ));
         }
-        events.push(InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0));
-
-        self.device.emit(&events).map_err(InputError::Emit)
+        if !events.is_empty() {
+            events.push(InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0));
+            self.device.emit(&events).map_err(InputError::Emit)?;
+        }
+        Ok(())
     }
 }
+
+/// Waits for the Wayland compositor / seat manager to open the newly-created device node.
+fn wait_for_compositor_binding(dev: &mut VirtualDevice) {
+    let node_path = match dev.enumerate_dev_nodes_blocking() {
+        Ok(mut nodes) => nodes.next().and_then(Result::ok),
+        Err(_) => None,
+    };
+
+    if let Some(path) = node_path {
+        let start = std::time::Instant::now();
+        let my_pid = std::process::id().to_string();
+
+        while start.elapsed() < Duration::from_millis(3000) {
+            if let Ok(output) = std::process::Command::new("fuser").arg(&path).output() {
+                let is_success = output.status.success();
+                if is_success {
+                    let holders = String::from_utf8_lossy(&output.stdout);
+                    // Check if the compositor / seat manager has opened the device node
+                    let has_compositor = holders
+                        .split_whitespace()
+                        .any(|pid| pid != my_pid && is_compositor_pid(pid));
+                    if has_compositor {
+                        // Compositor has opened the node. Allow brief moment for seat initialization.
+                        thread::sleep(Duration::from_millis(250));
+                        return;
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    // Fallback if dev node or fuser is unavailable
+    thread::sleep(Duration::from_millis(800));
+}
+
+fn is_compositor_pid(pid: &str) -> bool {
+    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        let comm_lower = comm.trim().to_lowercase();
+        // Ignore known non-compositor device inspection daemons
+        if comm_lower.contains("input-remapper")
+            || comm_lower.contains("udev")
+            || comm_lower.contains("systemd-udevd")
+            || comm_lower.contains("fuser")
+        {
+            return false;
+        }
+
+        // Known Wayland compositors and seat managers
+        if comm_lower.contains("gnome-shell")
+            || comm_lower.contains("mutter")
+            || comm_lower.contains("kwin")
+            || comm_lower.contains("sway")
+            || comm_lower.contains("hyprland")
+            || comm_lower.contains("weston")
+            || comm_lower.contains("wayfire")
+            || comm_lower.contains("cosmic-comp")
+            || comm_lower.contains("systemd-logind")
+            || comm_lower.contains("xorg")
+            || comm_lower.contains("xwayland")
+        {
+            return true;
+        }
+
+        // Any other non-ignored process that holds the input node
+        return true;
+    }
+    false
+}
+
+
