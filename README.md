@@ -28,6 +28,7 @@ cargo run -p notmouse -- overlay
   - `Space` / `Enter`: Left-click and close
   - `r`: Right-click and close
   - `d`: Double-click and close
+  - `m`: Middle-click and close
   - `v`: Drag lock
   - `s`: Scroll mode
   - `h j k l` or arrow keys: Micro-nudge the reticle pixel-by-pixel (hold `Shift` for larger steps)

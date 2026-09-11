@@ -210,7 +210,7 @@ function drawOverlay(area, context, width, height, state) {
     } else if (!isLocked) {
         breadcrumb = `Region ${state.path[0].toUpperCase()}  •  Stroke 2: Choose target  •  Enter for region center  •  Backspace to undo`;
     } else {
-        breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  r: Right-Click  •  d: Double-Click  •  hjkl: Nudge  •  Backspace: Undo`;
+        breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  r: Right  •  d: Double  •  m: Middle  •  hjkl: Nudge  •  Backspace: Undo`;
     }
 
     const layout = area.create_pango_layout(`${breadcrumb}  •  Esc to cancel`);
@@ -318,6 +318,11 @@ function runOverlay() {
                 }
                 if (char === 'd') {
                     emitSelection(state, 'double-click');
+                    application.quit();
+                    return true;
+                }
+                if (char === 'm') {
+                    emitSelection(state, 'middle-click');
                     application.quit();
                     return true;
                 }
