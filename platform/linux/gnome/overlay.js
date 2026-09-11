@@ -4,6 +4,7 @@ imports.gi.versions.Pango = '1.0';
 imports.gi.versions.PangoCairo = '1.0';
 
 const { Gdk, Gio, GLib, Gtk, Pango, PangoCairo } = imports.gi;
+const Cairo = imports.cairo;
 
 const HINTS = ['a', 's', 'd', 'f', 'j', 'k', 'l', 'g', 'h'];
 const GRID_SIZE = 3;
@@ -88,6 +89,86 @@ function drawReticle(context, x, y) {
 }
 
 function drawOverlay(area, context, width, height, state) {
+    if (state.mode === 'scroll') {
+        // Minimal background tint so underlying content is 100% legible
+        context.setSourceRGBA(0.01, 0.02, 0.04, 0.04);
+        context.rectangle(0, 0, width, height);
+        context.fill();
+
+        const reticleX = (state.point ? state.point.x : 0.5) * width;
+        const reticleY = (state.point ? state.point.y : 0.5) * height;
+
+        // Animated / directional scroll anchor ring at reticle position
+        const radius = 22;
+        context.setSourceRGBA(0.18, 0.80, 0.97, 0.35); // cyan glow
+        context.setLineWidth(4.0);
+        context.arc(reticleX, reticleY, radius + 2, 0, 2 * Math.PI);
+        context.stroke();
+
+        context.setSourceRGBA(0.18, 0.80, 0.97, 0.95);
+        context.setLineWidth(2.0);
+        context.arc(reticleX, reticleY, radius, 0, 2 * Math.PI);
+        context.stroke();
+
+        // Center dot
+        context.setSourceRGBA(0.18, 0.80, 0.97, 1.0);
+        context.arc(reticleX, reticleY, 3.0, 0, 2 * Math.PI);
+        context.fill();
+
+        // Direction indicators around anchor
+        const isUp = state.lastScrollDir === 'up';
+        const isDown = state.lastScrollDir === 'down';
+
+        // Up arrow
+        context.setSourceRGBA(0.18, 0.80, 0.97, isUp ? 1.0 : 0.4);
+        context.moveTo(reticleX, reticleY - radius - 14);
+        context.lineTo(reticleX - 7, reticleY - radius - 3);
+        context.lineTo(reticleX + 7, reticleY - radius - 3);
+        context.closePath();
+        context.fill();
+
+        // Down arrow
+        context.setSourceRGBA(0.18, 0.80, 0.97, isDown ? 1.0 : 0.4);
+        context.moveTo(reticleX, reticleY + radius + 14);
+        context.lineTo(reticleX - 7, reticleY + radius + 3);
+        context.lineTo(reticleX + 7, reticleY + radius + 3);
+        context.closePath();
+        context.fill();
+
+        // Small badge at scroll anchor
+        drawLabel(area, context, 'SCROLL', reticleX, reticleY - 36, {
+            fontSize: 11,
+            paddingX: 8,
+            paddingY: 3,
+            bg: [0.10, 0.15, 0.25, 0.95],
+            fg: [0.30, 0.85, 1.0, 1.0],
+        });
+
+        // Floating bottom HUD bar
+        const barWidth = Math.min(width - 40, 780);
+        const barHeight = 44;
+        const barX = (width - barWidth) / 2;
+        const barY = height - barHeight - 24;
+
+        context.setSourceRGBA(0.06, 0.08, 0.12, 0.92);
+        context.rectangle(barX, barY, barWidth, barHeight);
+        context.fill();
+
+        context.setSourceRGBA(0.18, 0.80, 0.97, 0.80);
+        context.setLineWidth(1.8);
+        context.rectangle(barX, barY, barWidth, barHeight);
+        context.stroke();
+
+        const hudText = '📜 SCROLL MODE  •  [j / s / ↓] Down  •  [k / w / ↑] Up  •  [d / u] Page  •  [Shift] Faster  •  [Tab] Grid  •  [Esc / Space] Exit';
+        const hudLayout = area.create_pango_layout(hudText);
+        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 12'));
+        const [textW, textH] = hudLayout.get_pixel_size();
+        context.setSourceRGBA(0.95, 0.97, 1.0, 1.0);
+        context.moveTo(barX + (barWidth - textW) / 2, barY + (barHeight - textH) / 2);
+        PangoCairo.show_layout(context, hudLayout);
+        return;
+    }
+
     const isMacroView = state.path.length === 0;
     const isLocked = state.path.length >= MAX_DEPTH;
 
@@ -95,6 +176,22 @@ function drawOverlay(area, context, width, height, state) {
     context.setSourceRGBA(0.02, 0.03, 0.06, isMacroView ? 0.12 : 0.24);
     context.rectangle(0, 0, width, height);
     context.fill();
+
+    // If dragging active, draw source anchor
+    if (state.dragging && state.dragStartPoint) {
+        const startX = state.dragStartPoint.x * width;
+        const startY = state.dragStartPoint.y * height;
+        context.setSourceRGBA(1.0, 0.25, 0.25, 0.90);
+        context.arc(startX, startY, 12, 0, 2 * Math.PI);
+        context.fill();
+        drawLabel(area, context, 'DRAG SOURCE', startX, startY - 24, {
+            fontSize: 10,
+            paddingX: 6,
+            paddingY: 2,
+            bg: [0.8, 0.1, 0.1, 0.95],
+            fg: [1, 1, 1, 1],
+        });
+    }
 
     const selected = {
         x: state.rect.x * width,
@@ -205,12 +302,20 @@ function drawOverlay(area, context, width, height, state) {
 
     // Header breadcrumb
     let breadcrumb;
-    if (isMacroView) {
+    if (state.dragging) {
+        if (isMacroView) {
+            breadcrumb = '🎯 DRAG ENGAGED  •  Stroke 1: Choose destination region  •  [Esc] Cancel drag';
+        } else if (!isLocked) {
+            breadcrumb = `🎯 DRAG ENGAGED  •  Region ${state.path[0].toUpperCase()}  •  Stroke 2: Choose drop target  •  [Space] Drop here`;
+        } else {
+            breadcrumb = `🎯 DROP TARGET LOCKED: ${state.path.join('').toUpperCase()}  •  [v / Space / Enter] DROP  •  [Esc] Cancel`;
+        }
+    } else if (isMacroView) {
         breadcrumb = '!mouse  •  Stroke 1: Choose region (A S D F J K L G H)';
     } else if (!isLocked) {
         breadcrumb = `Region ${state.path[0].toUpperCase()}  •  Stroke 2: Choose target  •  Enter for region center  •  Backspace to undo`;
     } else {
-        breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  r: Right  •  d: Double  •  m: Middle  •  hjkl: Nudge  •  Backspace: Undo`;
+        breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  s: Scroll Mode  •  v: Drag Mode  •  c: Click & Stay  •  r/d/m: Other Clicks`;
     }
 
     const layout = area.create_pango_layout(`${breadcrumb}  •  Esc to cancel`);
@@ -247,10 +352,15 @@ function runOverlay() {
 
     application.connect('activate', () => {
         const state = {
+            mode: 'grid', // 'grid' | 'scroll'
             path: [],
             rect: { x: 0, y: 0, width: 1, height: 1 },
             history: [],
             point: null,
+            scrollSpeed: 5,
+            lastScrollDir: null,
+            dragging: false,
+            dragStartPoint: null,
         };
         const window = new Gtk.ApplicationWindow({
             application,
@@ -261,7 +371,10 @@ function runOverlay() {
 
         const provider = new Gtk.CssProvider();
         provider.load_from_data(
-            'window.notmouse-overlay { background-color: transparent; }',
+            `window {
+                 background: transparent;
+                 background-color: transparent;
+             }`,
             -1,
         );
         Gtk.StyleContext.add_provider_for_display(
@@ -281,7 +394,78 @@ function runOverlay() {
 
         const keyboard = new Gtk.EventControllerKey();
         keyboard.connect('key-pressed', (_controller, keyval, _keycode, modifierState) => {
+            const char = keyCharacter(keyval);
+            const isShift = (modifierState & Gdk.ModifierType.SHIFT_MASK) !== 0;
+
+            // Handle Scroll Mode
+            if (state.mode === 'scroll') {
+                const mult = isShift ? 3 : 1;
+
+                if (keyval === Gdk.KEY_Escape || keyval === Gdk.KEY_space || keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || char === 'q') {
+                    application.quit();
+                    return true;
+                }
+
+                if (keyval === Gdk.KEY_Tab) {
+                    state.mode = 'grid';
+                    const surface = window.get_surface();
+                    if (surface) {
+                        surface.set_input_region(null);
+                    }
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
+                if (char === 'j' || char === 's' || keyval === Gdk.KEY_Down) {
+                    state.lastScrollDir = 'down';
+                    print(JSON.stringify({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * mult }));
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
+                if (char === 'k' || char === 'w' || keyval === Gdk.KEY_Up) {
+                    state.lastScrollDir = 'up';
+                    print(JSON.stringify({ event: 'scroll', dx: 0, dy: state.scrollSpeed * mult }));
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
+                if (char === 'd' || keyval === Gdk.KEY_Page_Down) {
+                    state.lastScrollDir = 'down';
+                    print(JSON.stringify({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * 3 * mult }));
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
+                if (char === 'u' || keyval === Gdk.KEY_Page_Up) {
+                    state.lastScrollDir = 'up';
+                    print(JSON.stringify({ event: 'scroll', dx: 0, dy: state.scrollSpeed * 3 * mult }));
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
+                if (char === 'h' || keyval === Gdk.KEY_Left) {
+                    state.lastScrollDir = 'left';
+                    print(JSON.stringify({ event: 'scroll', dx: -state.scrollSpeed * mult, dy: 0 }));
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
+                if (char === 'l' || keyval === Gdk.KEY_Right) {
+                    state.lastScrollDir = 'right';
+                    print(JSON.stringify({ event: 'scroll', dx: state.scrollSpeed * mult, dy: 0 }));
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
+                return true;
+            }
+
+            // Handle Grid Mode
             if (keyval === Gdk.KEY_Escape) {
+                if (state.dragging) {
+                    print(JSON.stringify({ event: 'release', button: 'left' }));
+                }
                 print(JSON.stringify({ event: 'cancelled' }));
                 application.quit();
                 return true;
@@ -302,15 +486,43 @@ function runOverlay() {
 
             // When in locked target mode: handle actions and nudging
             if (isLocked) {
-                const char = keyCharacter(keyval);
-                const isShift = (modifierState & Gdk.ModifierType.SHIFT_MASK) !== 0;
-
                 // Actions
                 if (keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || keyval === Gdk.KEY_space) {
+                    if (state.dragging) {
+                        const dropTarget = state.point || {
+                            x: state.rect.x + state.rect.width / 2,
+                            y: state.rect.y + state.rect.height / 2,
+                        };
+                        print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
+                        print(JSON.stringify({ event: 'release', button: 'left' }));
+                        state.dragging = false;
+                        application.quit();
+                        return true;
+                    }
                     emitSelection(state, isShift ? 'right-click' : 'click');
                     application.quit();
                     return true;
                 }
+
+                // Click and stay (chained click)
+                if (char === 'c') {
+                    const target = state.point || {
+                        x: state.rect.x + state.rect.width / 2,
+                        y: state.rect.y + state.rect.height / 2,
+                    };
+                    print(JSON.stringify({
+                        event: 'click',
+                        button: isShift ? 'right' : 'left',
+                        normalized: { x: target.x, y: target.y },
+                    }));
+                    state.path = [];
+                    state.history = [];
+                    state.rect = { x: 0, y: 0, width: 1, height: 1 };
+                    state.point = null;
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
                 if (char === 'r') {
                     emitSelection(state, 'right-click');
                     application.quit();
@@ -326,14 +538,64 @@ function runOverlay() {
                     application.quit();
                     return true;
                 }
+
+                // Drag Mode (Two-Phase Drag and Drop)
                 if (char === 'v') {
-                    emitSelection(state, 'drag');
-                    application.quit();
-                    return true;
+                    if (!state.dragging) {
+                        state.dragging = true;
+                        const target = state.point || {
+                            x: state.rect.x + state.rect.width / 2,
+                            y: state.rect.y + state.rect.height / 2,
+                        };
+                        state.dragStartPoint = target;
+                        print(JSON.stringify({ event: 'move', x: target.x, y: target.y }));
+                        print(JSON.stringify({ event: 'press', button: 'left' }));
+
+                        state.path = [];
+                        state.history = [];
+                        state.rect = { x: 0, y: 0, width: 1, height: 1 };
+                        state.point = null;
+                        drawingArea.queue_draw();
+                        return true;
+                    } else {
+                        const dropTarget = state.point || {
+                            x: state.rect.x + state.rect.width / 2,
+                            y: state.rect.y + state.rect.height / 2,
+                        };
+                        print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
+                        print(JSON.stringify({ event: 'release', button: 'left' }));
+                        state.dragging = false;
+                        application.quit();
+                        return true;
+                    }
                 }
-                if (char === 's') {
-                    emitSelection(state, 'scroll');
-                    application.quit();
+
+                // Scroll Mode (Continuous Interactive Kinetic Scroll)
+                if (char === 's' || char === 'w') {
+                    state.mode = 'scroll';
+                    const target = state.point || {
+                        x: state.rect.x + state.rect.width / 2,
+                        y: state.rect.y + state.rect.height / 2,
+                    };
+                    state.point = target;
+                    print(JSON.stringify({ event: 'move', x: target.x, y: target.y }));
+
+                    const surface = window.get_surface();
+                    if (surface) {
+                        surface.set_input_region(new Cairo.Region());
+                    }
+
+                    const isUp = char === 'w' || isShift;
+                    state.lastScrollDir = isUp ? 'up' : 'down';
+                    drawingArea.queue_draw();
+
+                    // Delay initial scroll slightly so Mutter commits empty input region and updates pointer focus
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
+                        if (state.mode === 'scroll') {
+                            print(JSON.stringify({ event: 'scroll', dx: 0, dy: isUp ? 5 : -5 }));
+                        }
+                        return GLib.SOURCE_REMOVE;
+                    });
                     return true;
                 }
 
@@ -371,14 +633,23 @@ function runOverlay() {
 
             // Stroke 1 confirmation with Enter/Space for macro region center
             if (state.path.length === 1 && (keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || keyval === Gdk.KEY_space)) {
-                const isShift = (modifierState & Gdk.ModifierType.SHIFT_MASK) !== 0;
+                if (state.dragging) {
+                    const dropTarget = {
+                        x: state.rect.x + state.rect.width / 2,
+                        y: state.rect.y + state.rect.height / 2,
+                    };
+                    print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
+                    print(JSON.stringify({ event: 'release', button: 'left' }));
+                    state.dragging = false;
+                    application.quit();
+                    return true;
+                }
                 emitSelection(state, isShift ? 'right-click' : 'click');
                 application.quit();
                 return true;
             }
 
             // Hint navigation (Stroke 1 or Stroke 2)
-            const char = keyCharacter(keyval);
             const index = HINTS.indexOf(char);
             if (index === -1) {
                 return true;
@@ -401,7 +672,14 @@ function runOverlay() {
         });
         window.add_controller(keyboard);
         window.set_child(drawingArea);
-        window.fullscreen();
+        const display = Gdk.Display.get_default();
+        const monitors = display.get_monitors();
+        if (monitors.get_n_items() > 0) {
+            const monitor = monitors.get_item(0);
+            const geometry = monitor.get_geometry();
+            window.set_default_size(geometry.width, geometry.height);
+        }
+        window.maximize();
         window.present();
         drawingArea.grab_focus();
 

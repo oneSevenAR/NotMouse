@@ -23,6 +23,7 @@ function runTestBench() {
             default_width: 860,
             default_height: 640,
         });
+        window.maximize();
 
         // CSS Styling
         const provider = new Gtk.CssProvider();
@@ -270,6 +271,13 @@ function runTestBench() {
         function appendLog(message) {
             const time = formatTime();
             const fullLine = `[${time}] ${message}\n`;
+            print(fullLine.trim());
+            try {
+                const file = Gio.File.new_for_path('/tmp/testbench_events.log');
+                const outStream = file.append_to(Gio.FileCreateFlags.NONE, null);
+                outStream.write_all(fullLine, null);
+                outStream.close(null);
+            } catch (_) {}
             const endIter = logBuffer.get_end_iter();
             logBuffer.insert(endIter, fullLine, -1);
 
@@ -469,6 +477,7 @@ function runTestBench() {
         // --- Window-wide Click Catcher (Tracks any click anywhere in the window) ---
         const globalClick = new Gtk.GestureClick();
         globalClick.set_button(0); // Listen to ALL buttons (1=Left, 2=Middle, 3=Right)
+        globalClick.set_propagation_phase(Gtk.PropagationPhase.CAPTURE);
         globalClick.connect('pressed', (_g, nPress, x, y) => {
             const button = globalClick.get_current_button();
             let buttonName = 'BUTTON_' + button;
@@ -480,6 +489,20 @@ function runTestBench() {
             appendLog(`[WINDOW] ${buttonName} ${pressDesc} at (${Math.round(x)}, ${Math.round(y)})`);
         });
         window.add_controller(globalClick);
+
+        // --- Window-wide Scroll Catcher ---
+        const globalScroll = new Gtk.EventControllerScroll({
+            flags: Gtk.EventControllerScrollFlags.BOTH_AXES,
+        });
+        globalScroll.set_propagation_phase(Gtk.PropagationPhase.CAPTURE);
+        globalScroll.connect('scroll', (_c, dx, dy) => {
+            stats.scrolls += 1;
+            const direction = dy > 0 ? 'DOWN' : (dy < 0 ? 'UP' : (dx > 0 ? 'RIGHT' : 'LEFT'));
+            appendLog(`[WINDOW] 📜 Scroll detected: ${direction} (dx=${dx.toFixed(1)}, dy=${dy.toFixed(1)})`);
+            updateCounterDisplay();
+            return false;
+        });
+        window.add_controller(globalScroll);
 
         // --- Window-wide Key Controller: ONLY exits on Escape, Tab summons overlay ---
         const keyController = new Gtk.EventControllerKey();
@@ -506,6 +529,7 @@ function runTestBench() {
             });
         }
 
+        appendLog('[INIT] Test bench started and ready for input events');
         window.present();
     });
 

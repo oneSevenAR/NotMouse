@@ -26,11 +26,12 @@ cargo run -p notmouse -- overlay
 - **Stroke 2:** Press the second key to lock the target reticle onto that sub-cell.
 - **Actions & Nudge:**
   - `Space` / `Enter`: Left-click and close
+  - `c`: **Click & Stay** (execute click and immediately re-arm overlay for next target)
+  - `s` or `w`: **Continuous Scroll Mode** (locks cursor, exposes underlying app, streams `j`/`k`/`d`/`u` scrolls until `Esc`/`Space`)
+  - `v`: **Two-Phase Drag Mode** (Phase 1 captures source; re-arms grid to navigate and drop at destination with `v` or `Space`)
   - `r`: Right-click and close
   - `d`: Double-click and close
   - `m`: Middle-click and close
-  - `v`: Drag lock
-  - `s`: Scroll mode
   - `h j k l` or arrow keys: Micro-nudge the reticle pixel-by-pixel (hold `Shift` for larger steps)
   - `Backspace`: Undo last stroke
   - `Esc`: Cancel
