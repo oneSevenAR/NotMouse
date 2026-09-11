@@ -91,8 +91,8 @@ function drawOverlay(area, context, width, height, state) {
     const isMacroView = state.path.length === 0;
     const isLocked = state.path.length >= MAX_DEPTH;
 
-    // Dim the screen background
-    context.setSourceRGBA(0.02, 0.03, 0.06, isMacroView ? 0.55 : 0.75);
+    // Subtly dim the screen background so elements underneath remain clearly visible
+    context.setSourceRGBA(0.02, 0.03, 0.06, isMacroView ? 0.12 : 0.24);
     context.rectangle(0, 0, width, height);
     context.fill();
 
@@ -113,7 +113,7 @@ function drawOverlay(area, context, width, height, state) {
             // Faint sub-grid inside each macro cell
             for (let s = 0; s < HINTS.length; s += 1) {
                 const subZone = childRect(macroZone, s);
-                context.setSourceRGBA(0.40, 0.45, 0.55, 0.20);
+                context.setSourceRGBA(0.40, 0.45, 0.55, 0.18);
                 context.setLineWidth(1.0);
                 context.rectangle(subZone.x, subZone.y, subZone.width, subZone.height);
                 context.stroke();
@@ -125,13 +125,13 @@ function drawOverlay(area, context, width, height, state) {
                     fontSize: 10,
                     paddingX: 5,
                     paddingY: 2,
-                    bg: [0.12, 0.15, 0.22, 0.75],
+                    bg: [0.12, 0.15, 0.22, 0.70],
                     fg: [0.80, 0.85, 0.95, 0.85],
                 });
             }
 
             // Outer border of macro cell
-            context.setSourceRGBA(0.85, 0.88, 0.95, 0.60);
+            context.setSourceRGBA(0.85, 0.88, 0.95, 0.50);
             context.setLineWidth(m === 4 ? 2.5 : 1.6);
             context.rectangle(macroZone.x, macroZone.y, macroZone.width, macroZone.height);
             context.stroke();
@@ -141,13 +141,13 @@ function drawOverlay(area, context, width, height, state) {
                 fontSize: 26,
                 paddingX: 18,
                 paddingY: 10,
-                bg: [0.97, 0.72, 0.18, 0.95],
+                bg: [0.97, 0.72, 0.18, 0.88],
                 fg: [0.05, 0.06, 0.09, 1.0],
             });
         }
     } else if (!isLocked) {
         // Focused region view: highlight selected macro cell, draw 9 subcells
-        context.setSourceRGBA(0.08, 0.12, 0.20, 0.35);
+        context.setSourceRGBA(0.08, 0.12, 0.20, 0.08);
         context.rectangle(selected.x, selected.y, selected.width, selected.height);
         context.fill();
 
@@ -173,13 +173,13 @@ function drawOverlay(area, context, width, height, state) {
                 fontSize: 20,
                 paddingX: 14,
                 paddingY: 8,
-                bg: [0.97, 0.72, 0.18, 0.96],
+                bg: [0.97, 0.72, 0.18, 0.90],
                 fg: [0.05, 0.06, 0.09, 1.0],
             });
         }
     } else {
         // Locked target view: highlight locked cell, render reticle and nudge instructions
-        context.setSourceRGBA(0.12, 0.18, 0.28, 0.45);
+        context.setSourceRGBA(0.12, 0.18, 0.28, 0.10);
         context.rectangle(selected.x, selected.y, selected.width, selected.height);
         context.fill();
 

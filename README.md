@@ -35,11 +35,18 @@ cargo run -p notmouse -- overlay
   - `Backspace`: Undo last stroke
   - `Esc`: Cancel
 
-### Interactive Mouse Event Test Bench
-To safely test clicks, double-clicks, right-clicks, drags, and scrolling without clicking other desktop apps:
+### Interactive Playground
+To test mouse interactions easily with the overlay directly over a safe target window:
 
 ```sh
-cargo run -p notmouse -- test-bench
+cargo run -p notmouse -- playground
+```
+This single command launches the test bench window and immediately summons the overlay on top of it. Inside the test bench, press `Tab` or `F1` anytime to summon the overlay again, and press `Esc` to close the test bench.
+
+You can also launch the components individually:
+```sh
+cargo run -p notmouse -- overlay      # Just the 2-stroke overlay
+cargo run -p notmouse -- test-bench   # Just the interactive test bench
 ```
 The test bench stays open persistently and logs all detected events in real-time. Press `Esc` to close it.
 

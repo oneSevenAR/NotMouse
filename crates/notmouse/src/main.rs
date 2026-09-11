@@ -65,6 +65,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("playground" | "test") => match launch_playground() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("notmouse: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some("test-bench") => match launch_test_bench() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -85,7 +92,7 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "!mouse {}\n\nUsage:\n  notmouse overlay        Open the 2-stroke spatial matrix overlay and perform action\n  notmouse test-bench     Open the interactive mouse event playground (Esc to exit)\n  notmouse click <x> <y>  Move to normalized (x, y) and left-click\n  notmouse move <x> <y>   Move to normalized (x, y)\n  notmouse demo           Show the terminal matrix demonstration\n  notmouse --version      Show the version",
+        "!mouse {}\n\nUsage:\n  notmouse playground     Open test bench and overlay together in one command\n  notmouse overlay        Open the 2-stroke spatial matrix overlay and perform action\n  notmouse test-bench     Open the interactive test bench window alone (Esc to exit)\n  notmouse click <x> <y>  Move to normalized (x, y) and left-click\n  notmouse move <x> <y>   Move to normalized (x, y)\n  notmouse demo           Show the terminal matrix demonstration\n  notmouse --version      Show the version",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -246,10 +253,53 @@ fn launch_test_bench() -> Result<(), String> {
         ));
     }
 
-    let status = Command::new("gjs")
-        .arg(script)
+    let mut cmd = Command::new("gjs");
+    cmd.arg(script);
+    if let Ok(exe) = std::env::current_exe() {
+        cmd.env("NOTMOUSE_BIN", exe);
+    }
+
+    let status = cmd
         .status()
         .map_err(|error| format!("could not start the test bench: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("the test bench exited with {status}"))
+    }
+}
+
+fn launch_playground() -> Result<(), String> {
+    let script = test_bench_script();
+    if !script.is_file() {
+        return Err(format!(
+            "test bench script was not found at {}",
+            script.display()
+        ));
+    }
+
+    println!("!mouse: launching interactive test bench...");
+    let mut cmd = Command::new("gjs");
+    cmd.arg(script);
+    if let Ok(exe) = std::env::current_exe() {
+        cmd.env("NOTMOUSE_BIN", exe);
+    }
+
+    let mut bench_child = cmd
+        .spawn()
+        .map_err(|error| format!("could not spawn test bench: {error}"))?;
+
+    // Give test bench window a moment to map to the display
+    thread::sleep(Duration::from_millis(450));
+
+    println!("!mouse: summoning overlay directly over test bench...");
+    let _ = launch_overlay();
+
+    println!("!mouse: test bench running! Inside the window, press Tab to summon !mouse again, or Esc to exit.");
+    let status = bench_child
+        .wait()
+        .map_err(|error| format!("failed waiting for test bench: {error}"))?;
 
     if status.success() {
         Ok(())

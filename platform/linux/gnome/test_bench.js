@@ -105,6 +105,17 @@ function runTestBench() {
                 font-weight: bold;
                 color: #c9d1d9;
             }
+            .summon-btn {
+                background-color: #238636;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 12px;
+                border-radius: 6px;
+                padding: 6px 14px;
+            }
+            .summon-btn:hover {
+                background-color: #2ea043;
+            }
         `, -1);
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(),
@@ -112,6 +123,27 @@ function runTestBench() {
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
         window.add_css_class('testbench');
+
+        function summonOverlay() {
+            appendLog('🚀 Summoning !mouse overlay...');
+            const bin = GLib.getenv('NOTMOUSE_BIN');
+            let argv;
+            if (bin && bin.length > 0) {
+                argv = [bin, 'overlay'];
+            } else {
+                argv = ['cargo', 'run', '-p', 'notmouse', '--', 'overlay'];
+            }
+
+            try {
+                const proc = new Gio.Subprocess({
+                    argv,
+                    flags: Gio.SubprocessFlags.NONE,
+                });
+                proc.init(null);
+            } catch (e) {
+                appendLog(`[ERROR] Failed to summon overlay: ${e.message}`);
+            }
+        }
 
         // Main Layout Container
         const rootBox = new Gtk.Box({
@@ -135,6 +167,15 @@ function runTestBench() {
         });
         titleLabel.add_css_class('title-label');
         headerBox.append(titleLabel);
+
+        const summonBtn = new Gtk.Button({
+            label: '🎯 Summon !mouse (Tab)',
+        });
+        summonBtn.add_css_class('summon-btn');
+        summonBtn.connect('clicked', () => {
+            summonOverlay();
+        });
+        headerBox.append(summonBtn);
 
         const escHintLabel = new Gtk.Label({
             label: 'Press Esc to exit',
@@ -440,12 +481,16 @@ function runTestBench() {
         });
         window.add_controller(globalClick);
 
-        // --- Window-wide Key Controller: ONLY exits on Escape ---
+        // --- Window-wide Key Controller: ONLY exits on Escape, Tab summons overlay ---
         const keyController = new Gtk.EventControllerKey();
         keyController.connect('key-pressed', (_c, keyval) => {
             if (keyval === Gdk.KEY_Escape) {
                 appendLog(`[EXIT] Escape pressed, closing test bench...`);
                 application.quit();
+                return true;
+            }
+            if (keyval === Gdk.KEY_Tab || keyval === Gdk.KEY_F1) {
+                summonOverlay();
                 return true;
             }
             // Do NOT quit on any other key!
