@@ -109,7 +109,12 @@ impl InputDevice {
         // Wait for Wayland compositor / seat manager to bind the device node
         wait_for_compositor_binding(&mut device);
 
-        Ok(Self { device })
+        let mut input_dev = Self { device };
+        // Warm up coordinates in compositor so Clutter seat initializes pointer position
+        let _ = input_dev.move_to_normalized(0.5, 0.5);
+        thread::sleep(Duration::from_millis(50));
+
+        Ok(input_dev)
     }
 
     /// Moves the pointer to normalized screen coordinates $(x, y) \in [0.0, 1.0]$.

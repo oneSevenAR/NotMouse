@@ -414,7 +414,7 @@ fn launch_playground() -> Result<(), String> {
         .map_err(|error| format!("could not spawn test bench: {error}"))?;
 
     // Give test bench window a moment to map to the display
-    thread::sleep(Duration::from_millis(450));
+    thread::sleep(Duration::from_millis(650));
 
     println!("!mouse: summoning overlay directly over test bench...");
     let _ = launch_overlay();
