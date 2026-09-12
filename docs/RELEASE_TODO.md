@@ -52,14 +52,14 @@
 
 ## 2. Licensing & Cargo Metadata
 
-- [ ] **License Definition**
+- [x] **License Definition**
   - **Issue:** Root and crate `Cargo.toml` files do not declare a `license` field, and no `LICENSE` file exists in the repository.
   - **Action Plan:**
     - Choose standard open-source license (e.g. `MIT OR Apache-2.0` or `GPL-3.0`).
     - Add `license = "MIT OR Apache-2.0"` to `[workspace.package]` in root `Cargo.toml`.
     - Add `LICENSE-MIT` and `LICENSE-APACHE` files to repository root.
 
-- [ ] **Crate Manifest Polish**
+- [x] **Crate Manifest Polish**
   - Ensure crates have complete metadata:
     - `description`: Polish description for `crates.io` publishing.
     - `keywords`: e.g. `["accessibility", "keyboard", "mouse", "wayland", "gnome"]`.
@@ -70,7 +70,7 @@
 
 ## 3. Documentation & Changelog
 
-- [ ] **Update `README.md`**
+- [x] **Update `README.md`**
   - Document all current capabilities:
     - **Top Bar Mode (<kbd>t</kbd>):** Dedicated quick targets for Activities (<kbd>a</kbd>), Clock/Date (<kbd>s</kbd>), Quick Settings (<kbd>d</kbd>).
     - **Click & Stay (<kbd>c</kbd>):** Momentary unmap multi-click workflow across application windows.
@@ -80,7 +80,7 @@
     - **Resident Daemon & Shortcut Setup:** How to configure `notmouse.service` and the `<Super><Shift>M` shortcut.
     - **Prerequisites:** Note `/dev/uinput` group permissions (`input` / `uinput` group) and `gjs` / GTK 4 dependencies.
 
-- [ ] **Update `CHANGELOG.md`**
+- [x] **Update `CHANGELOG.md`**
   - Move unreleased features into a dedicated `## [0.1.0] - 2026-09-12` section.
   - Detail resident daemon architecture, Wayland unredirection transparency fixes, and momentary unmap pass-through.
 
