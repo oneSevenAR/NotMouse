@@ -173,9 +173,14 @@ pub fn execute_event(device: &mut InputDevice, event: &OverlayEvent) -> Result<(
                 .map_err(|e| format!("live release failed: {e}"))?;
         }
         OverlayEvent::Click { button, normalized } => {
+            // Wait briefly for Mutter to unmap the overlay and focus the window beneath
+            thread::sleep(Duration::from_millis(80));
             if let Some(p) = normalized {
+                println!("!mouse: live click '{button}' at ({:.3}, {:.3})", p.x, p.y);
                 let _ = device.move_to_normalized(p.x, p.y);
                 thread::sleep(Duration::from_millis(30));
+            } else {
+                println!("!mouse: live click '{button}' at current position");
             }
             if button == "double" || button == "double-click" {
                 let _ = device.double_click(MouseButton::Left);

@@ -228,7 +228,7 @@ function drawOverlay(area, context, width, height, state) {
         context.rectangle(barX, barY, barWidth, barHeight);
         context.stroke();
 
-        const hudText = '📌 TOP BAR MODE  •  [a] Activities  •  [s] Clock  •  [d] Settings/WiFi  •  [h/l] Nudge  •  [Enter] Click  •  [Tab] Grid';
+        const hudText = '📌 TOP BAR MODE  •  [a] Activities  •  [s] Clock  •  [d] Settings/WiFi  •  [c] Click & Stay  •  [Enter] Click  •  [Tab] Grid';
         const hudLayout = area.create_pango_layout(hudText);
         hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 12'));
         const [textW, textH] = hudLayout.get_pixel_size();
@@ -384,7 +384,7 @@ function drawOverlay(area, context, width, height, state) {
     } else if (!isLocked) {
         breadcrumb = `Region ${state.path[0].toUpperCase()}  •  Stroke 2: Choose target  •  Enter for region center  •  Backspace to undo`;
     } else {
-        breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  s: Scroll Mode  •  v: Drag Mode  •  r/d/m: Other Clicks`;
+        breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  s: Scroll Mode  •  v: Drag Mode  •  c: Click & Stay  •  r/d/m: Other Clicks`;
     }
 
     const layout = area.create_pango_layout(`${breadcrumb}  •  Esc to cancel`);
@@ -526,6 +526,29 @@ function runOverlay() {
                 if (char === 'r') {
                     emitSelection(state, 'right-click', window);
                     application.quit();
+                    return true;
+                }
+                if (char === 'c') {
+                    const target = getScreenCoordinates(state, window);
+                    window.set_visible(false);
+                    print(JSON.stringify({
+                        event: 'click',
+                        button: isShift ? 'right' : 'left',
+                        normalized: { x: target.x, y: target.y },
+                    }));
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 260, () => {
+                        state.mode = 'grid';
+                        state.path = [];
+                        state.history = [];
+                        state.rect = { x: 0, y: 0, width: 1, height: 1 };
+                        state.point = null;
+                        state.topBarTarget = null;
+                        window.set_visible(true);
+                        window.present();
+                        drawingArea.grab_focus();
+                        drawingArea.queue_draw();
+                        return GLib.SOURCE_REMOVE;
+                    });
                     return true;
                 }
                 if (char === 'a') {
@@ -692,6 +715,29 @@ function runOverlay() {
                     }
                     emitSelection(state, isShift ? 'right-click' : 'click', window);
                     application.quit();
+                    return true;
+                }
+
+                // Click and stay (chained click with momentary unmap)
+                if (char === 'c') {
+                    const target = getScreenCoordinates(state, window);
+                    window.set_visible(false);
+                    print(JSON.stringify({
+                        event: 'click',
+                        button: isShift ? 'right' : 'left',
+                        normalized: { x: target.x, y: target.y },
+                    }));
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 260, () => {
+                        state.path = [];
+                        state.history = [];
+                        state.rect = { x: 0, y: 0, width: 1, height: 1 };
+                        state.point = null;
+                        window.set_visible(true);
+                        window.present();
+                        drawingArea.grab_focus();
+                        drawingArea.queue_draw();
+                        return GLib.SOURCE_REMOVE;
+                    });
                     return true;
                 }
 
