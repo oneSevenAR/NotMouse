@@ -6,15 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::input::{InputDevice, MouseButton};
 use crate::OverlayEvent;
+use crate::input::{InputDevice, MouseButton};
 
 /// Returns the path to the Unix domain socket used for resident sessions.
 #[must_use]
 pub fn socket_path() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+        .map_or_else(std::env::temp_dir, PathBuf::from)
         .join("notmouse.sock")
 }
 
@@ -32,13 +31,12 @@ pub fn try_connect_at(path: &Path) -> Option<UnixStream> {
     if !path.exists() {
         return None;
     }
-    match UnixStream::connect(path) {
-        Ok(stream) => Some(stream),
-        Err(_) => {
-            // Remove stale socket from previous terminated session
-            let _ = std::fs::remove_file(path);
-            None
-        }
+    if let Ok(stream) = UnixStream::connect(path) {
+        Some(stream)
+    } else {
+        // Remove stale socket from previous terminated session
+        let _ = std::fs::remove_file(path);
+        None
     }
 }
 
@@ -53,7 +51,9 @@ pub fn send_event(event: &OverlayEvent) -> Result<bool, String> {
 
     let line = serde_json::to_string(event).map_err(|e| format!("serialization error: {e}"))?;
     writeln!(stream, "{line}").map_err(|e| format!("socket write error: {e}"))?;
-    stream.flush().map_err(|e| format!("socket flush error: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("socket flush error: {e}"))?;
     Ok(true)
 }
 
@@ -274,7 +274,8 @@ mod tests {
 
     #[test]
     fn test_server_lifecycle_and_event() {
-        let test_sock = std::env::temp_dir().join(format!("notmouse_test_{}.sock", std::process::id()));
+        let test_sock =
+            std::env::temp_dir().join(format!("notmouse_test_{}.sock", std::process::id()));
         let dev = InputDevice::new().expect("device creation should succeed");
         let server = start_server_at(dev, test_sock.clone()).expect("server start should succeed");
         assert!(test_sock.exists());

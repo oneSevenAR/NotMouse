@@ -149,7 +149,10 @@ fn run_daemon() -> Result<(), String> {
     let path = session::socket_path();
     let _server = session::start_server(device)?;
 
-    println!("!mouse: resident daemon ready (listening on {})", path.display());
+    println!(
+        "!mouse: resident daemon ready (listening on {})",
+        path.display()
+    );
     println!("!mouse: compositor binding warm and permanent. Press Ctrl+C to terminate.");
 
     loop {
@@ -199,10 +202,7 @@ fn move_to(x: f64, y: f64) -> Result<(), String> {
 fn scroll_at(steps_y: i32, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
     if let (Some(x), Some(y)) = (x, y) {
         let move_evt = OverlayEvent::Move { x, y };
-        let scroll_evt = OverlayEvent::Scroll {
-            dx: 0,
-            dy: steps_y,
-        };
+        let scroll_evt = OverlayEvent::Scroll { dx: 0, dy: steps_y };
         if session::send_event(&move_evt).unwrap_or(false) {
             thread::sleep(Duration::from_millis(50));
             let _ = session::send_event(&scroll_evt);
@@ -210,10 +210,7 @@ fn scroll_at(steps_y: i32, x: Option<f64>, y: Option<f64>) -> Result<(), String>
             return Ok(());
         }
     } else {
-        let scroll_evt = OverlayEvent::Scroll {
-            dx: 0,
-            dy: steps_y,
-        };
+        let scroll_evt = OverlayEvent::Scroll { dx: 0, dy: steps_y };
         if session::send_event(&scroll_evt).unwrap_or(false) {
             println!("!mouse: scroll {steps_y} steps dispatched to resident session");
             return Ok(());
@@ -286,7 +283,9 @@ fn launch_overlay() -> Result<(), String> {
     }
 
     // Standalone fallback: no resident daemon running
-    println!("!mouse: [notice] starting standalone input device (run 'notmouse playground' or 'notmouse daemon' for zero latency)");
+    println!(
+        "!mouse: [notice] starting standalone input device (run 'notmouse playground' or 'notmouse daemon' for zero latency)"
+    );
     let mut device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
 
     let mut child = Command::new("gjs")
@@ -344,7 +343,10 @@ fn overlay_script() -> PathBuf {
 
 fn test_bench_script() -> PathBuf {
     std::env::var_os("NOTMOUSE_TEST_BENCH_SCRIPT").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../platform/linux/gnome/test_bench.js"),
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../platform/linux/gnome/test_bench.js")
+        },
         PathBuf::from,
     )
 }
@@ -419,7 +421,9 @@ fn launch_playground() -> Result<(), String> {
     println!("!mouse: summoning overlay directly over test bench...");
     let _ = launch_overlay();
 
-    println!("!mouse: test bench running! Inside the window, press Tab to summon !mouse again, or Esc to exit.");
+    println!(
+        "!mouse: test bench running! Inside the window, press Tab to summon !mouse again, or Esc to exit."
+    );
     let status = bench_child
         .wait()
         .map_err(|error| format!("failed waiting for test bench: {error}"))?;
@@ -437,7 +441,10 @@ fn print_demo() {
     let macro_zones = matrix.macro_zones();
 
     println!("!mouse 2-Stroke Spatial Matrix Demo");
-    println!("Total reachable target points: {} in 2 keystrokes\n", matrix.all_zones().len());
+    println!(
+        "Total reachable target points: {} in 2 keystrokes\n",
+        matrix.all_zones().len()
+    );
 
     println!("Stroke 1: Choose a macro region (home row keys):");
     for row in macro_zones.chunks(3) {

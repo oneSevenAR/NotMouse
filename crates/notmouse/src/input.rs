@@ -240,11 +240,11 @@ fn wait_for_compositor_binding(dev: &mut VirtualDevice) {
 
     // Retry discovering dev node for up to 1.5 seconds in case sysfs entry is delayed
     while start_node.elapsed() < Duration::from_millis(1500) {
-        if let Ok(mut nodes) = dev.enumerate_dev_nodes_blocking() {
-            if let Some(Ok(path)) = nodes.next() {
-                node_path = Some(path);
-                break;
-            }
+        if let Ok(mut nodes) = dev.enumerate_dev_nodes_blocking()
+            && let Some(Ok(path)) = nodes.next()
+        {
+            node_path = Some(path);
+            break;
         }
         thread::sleep(Duration::from_millis(40));
     }
@@ -254,18 +254,18 @@ fn wait_for_compositor_binding(dev: &mut VirtualDevice) {
         let my_pid = std::process::id().to_string();
 
         while start.elapsed() < Duration::from_millis(5000) {
-            if let Ok(output) = std::process::Command::new("fuser").arg(&path).output() {
-                if output.status.success() {
-                    let holders = String::from_utf8_lossy(&output.stdout);
-                    // Check if the compositor / seat manager has opened the device node
-                    let has_compositor = holders
-                        .split_whitespace()
-                        .any(|pid| pid != my_pid && is_compositor_pid(pid));
-                    if has_compositor {
-                        // Compositor has opened the node. Allow brief moment for seat initialization.
-                        thread::sleep(Duration::from_millis(250));
-                        return;
-                    }
+            if let Ok(output) = std::process::Command::new("fuser").arg(&path).output()
+                && output.status.success()
+            {
+                let holders = String::from_utf8_lossy(&output.stdout);
+                // Check if the compositor / seat manager has opened the device node
+                let has_compositor = holders
+                    .split_whitespace()
+                    .any(|pid| pid != my_pid && is_compositor_pid(pid));
+                if has_compositor {
+                    // Compositor has opened the node. Allow brief moment for seat initialization.
+                    thread::sleep(Duration::from_millis(250));
+                    return;
                 }
             }
             thread::sleep(Duration::from_millis(50));
@@ -309,5 +309,3 @@ fn is_compositor_pid(pid: &str) -> bool {
     }
     false
 }
-
-
