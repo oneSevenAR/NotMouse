@@ -1,0 +1,13 @@
+[Unit]
+Description=!mouse Persistent Input Daemon
+Documentation=https://github.com/oneSevenAR/NotMouse
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/notmouse daemon
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target

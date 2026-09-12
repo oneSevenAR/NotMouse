@@ -7,7 +7,7 @@
 
 ## 1. High-Priority Packaging & Distribution
 
-- [ ] **Self-Contained Script & Asset Resolution**
+- [x] **Self-Contained Script & Asset Resolution**
   - **Issue:** Currently, `crates/notmouse/src/main.rs` looks for `overlay.js` via `env!("CARGO_MANIFEST_DIR")`. If a user installs via `cargo install --path crates/notmouse` or downloads a binary release, it fails unless the development repo is cloned.
   - **Action Plan:**
     1. Update `overlay_script()` to search in standard hierarchical order:
