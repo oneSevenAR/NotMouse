@@ -88,7 +88,7 @@
 
 ## 4. Continuous Integration (CI)
 
-- [ ] **Add GitHub Actions Workflow (`.github/workflows/ci.yml`)**
+- [x] **Add GitHub Actions Workflow (`.github/workflows/ci.yml`)**
   - Automate on `push` and `pull_request` against `main`:
     - `cargo fmt --check`
     - `cargo clippy --all-targets -- -D warnings`
