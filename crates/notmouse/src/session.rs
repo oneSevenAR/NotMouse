@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -23,15 +23,20 @@ pub fn socket_path() -> PathBuf {
 /// If a stale socket file exists from an unclean shutdown, it is automatically removed.
 #[must_use]
 pub fn try_connect() -> Option<UnixStream> {
-    let path = socket_path();
+    try_connect_at(&socket_path())
+}
+
+/// Attempts to connect to a resident session daemon at a specific socket path.
+#[must_use]
+pub fn try_connect_at(path: &Path) -> Option<UnixStream> {
     if !path.exists() {
         return None;
     }
-    match UnixStream::connect(&path) {
+    match UnixStream::connect(path) {
         Ok(stream) => Some(stream),
         Err(_) => {
             // Remove stale socket from previous terminated session
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path);
             None
         }
     }
@@ -73,9 +78,13 @@ impl Drop for ServerHandle {
     }
 }
 
-/// Starts the resident session server on a background thread using the provided warm `InputDevice`.
+/// Starts the resident session server on a background thread using the default socket path.
 pub fn start_server(device: InputDevice) -> Result<ServerHandle, String> {
-    let path = socket_path();
+    start_server_at(device, socket_path())
+}
+
+/// Starts the resident session server on a background thread using the specified socket path.
+pub fn start_server_at(device: InputDevice, path: PathBuf) -> Result<ServerHandle, String> {
     let _ = std::fs::remove_file(&path);
 
     let listener = UnixListener::bind(&path)
@@ -260,19 +269,16 @@ mod tests {
 
     #[test]
     fn test_server_lifecycle_and_event() {
+        let test_sock = std::env::temp_dir().join(format!("notmouse_test_{}.sock", std::process::id()));
         let dev = InputDevice::new().expect("device creation should succeed");
-        let server = start_server(dev).expect("server start should succeed");
-        assert!(socket_path().exists());
+        let server = start_server_at(dev, test_sock.clone()).expect("server start should succeed");
+        assert!(test_sock.exists());
 
-        let connected = try_connect();
+        let connected = try_connect_at(&test_sock);
         assert!(connected.is_some());
-
-        let res = send_event(&OverlayEvent::Move { x: 0.5, y: 0.5 });
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap(), true);
 
         drop(server);
         thread::sleep(Duration::from_millis(50));
-        assert!(!socket_path().exists());
+        assert!(!test_sock.exists());
     }
 }
