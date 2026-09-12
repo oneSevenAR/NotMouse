@@ -175,11 +175,11 @@ function drawOverlay(area, context, width, height, state) {
         context.rectangle(0, 0, width, height);
         context.fill();
 
-        // 3 top bar target zones along top edge
+        // 3 top bar target zones along top edge (calibrated to GNOME Shell panel widgets)
         const zones = [
-            { key: 'A', id: 'a', name: 'ACTIVITIES', x: 0.04 * width },
-            { key: 'S', id: 's', name: 'CLOCK / DATE', x: 0.50 * width },
-            { key: 'D', id: 'd', name: 'SETTINGS / WIFI', x: 0.96 * width },
+            { key: 'A', id: 'a', name: 'ACTIVITIES', x: Math.max(68, 0.013 * width) },
+            { key: 'S', id: 's', name: 'CLOCK / DATE', x: 0.500 * width },
+            { key: 'D', id: 'd', name: 'SETTINGS / WIFI', x: Math.min(width - 70, 0.973 * width) },
         ];
 
         // Glowing golden top border indicating active top bar mode
@@ -201,7 +201,7 @@ function drawOverlay(area, context, width, height, state) {
         }
 
         // Draw reticle at current position pointing up into the bar
-        const reticleX = (state.point ? state.point.x : 0.96) * width;
+        const reticleX = (state.point ? state.point.x : 0.973) * width;
         const reticleY = 16;
         drawReticle(context, reticleX, reticleY);
 
@@ -558,7 +558,7 @@ function runOverlay() {
                         return true;
                     }
                     state.topBarTarget = 'a';
-                    state.point = { x: 0.040, y: -0.010 };
+                    state.point = { x: 0.013, y: -0.010 };
                     drawingArea.queue_draw();
                     return true;
                 }
@@ -580,7 +580,7 @@ function runOverlay() {
                         return true;
                     }
                     state.topBarTarget = 'd';
-                    state.point = { x: 0.965, y: -0.010 };
+                    state.point = { x: 0.973, y: -0.010 };
                     drawingArea.queue_draw();
                     return true;
                 }
@@ -588,7 +588,7 @@ function runOverlay() {
                 // Nudge inside top bar
                 const step = isShift ? 0.02 : 0.005;
                 if (!state.point) {
-                    state.point = { x: 0.965, y: -0.010 };
+                    state.point = { x: 0.973, y: -0.010 };
                 }
                 if (char === 'h' || keyval === Gdk.KEY_Left) {
                     state.point.x = Math.max(0, state.point.x - step);
@@ -867,7 +867,7 @@ function runOverlay() {
             if (state.path.length === 0 && (char === 't' || keyval === Gdk.KEY_grave)) {
                 state.mode = 'topbar';
                 state.topBarTarget = null;
-                state.point = { x: 0.965, y: -0.010 };
+                state.point = { x: 0.973, y: -0.010 };
                 drawingArea.queue_draw();
                 return true;
             }
