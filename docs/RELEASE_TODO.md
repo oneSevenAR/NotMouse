@@ -99,7 +99,7 @@
 
 ## 5. Release Tagging
 
-- [ ] **Git Tag & Release Creation**
+- [x] **Git Tag & Release Creation**
   - Create annotated git tag: `git tag -a v0.1.0 -m "Release v0.1.0: Keyboard-first interaction layer for Linux"`
   - Push tag: `git push origin v0.1.0`
   - Generate GitHub Release with changelog notes and binary artifacts.
