@@ -334,21 +334,96 @@ fn launch_overlay() -> Result<(), String> {
     Ok(())
 }
 
+/// Embedded overlay script bytes, compiled into the binary so the binary is
+/// fully self-contained even when installed without source.
+const OVERLAY_JS: &str = include_str!("../../../platform/linux/gnome/overlay.js");
+
+/// Embedded test-bench script bytes.
+const TEST_BENCH_JS: &str = include_str!("../../../platform/linux/gnome/test_bench.js");
+
+/// Return the user-level data directory for !mouse scripts:
+/// `$XDG_DATA_HOME/notmouse` or `~/.local/share/notmouse`.
+fn notmouse_user_data_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs_next::home_dir().map(|h| h.join(".local/share")))?;
+    Some(base.join("notmouse"))
+}
+
+/// Search for a script in the standard installation hierarchy.
+///
+/// Order:
+/// 1. `$env_var` override (environment variable).
+/// 2. Executable sibling directory: `<exe_dir>/<name>`.
+/// 3. User data dir: `$XDG_DATA_HOME/notmouse/<name>`.
+/// 4. System data dirs: `/usr/local/share/notmouse/<name>`, `/usr/share/notmouse/<name>`.
+/// 5. Development source fallback: `CARGO_MANIFEST_DIR/../../platform/linux/gnome/<name>`.
+///
+/// If no file is found but `embedded` content is provided, it is written to the
+/// user data dir and that path is returned so subsequent calls hit option 3.
+fn resolve_script(name: &str, env_var: &str, embedded: &str) -> PathBuf {
+    // 1. Environment-variable override.
+    if let Some(val) = std::env::var_os(env_var) {
+        return PathBuf::from(val);
+    }
+
+    // 2. Sibling of the running executable.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        let candidate = exe_dir.join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    // 3. User XDG data directory.
+    if let Some(user_dir) = notmouse_user_data_dir() {
+        let candidate = user_dir.join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    // 4. System-wide data directories.
+    for prefix in &["/usr/local/share", "/usr/share"] {
+        let candidate = PathBuf::from(prefix).join("notmouse").join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    // 5. Development source-tree fallback (works when running from `cargo run`).
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../platform/linux/gnome")
+        .join(name);
+    if dev_path.is_file() {
+        return dev_path;
+    }
+
+    // Nothing found — extract the embedded script to the user data dir so the
+    // binary is self-contained for users who installed via `cargo install` or a
+    // pre-built binary without copying the asset files manually.
+    if let Some(user_dir) = notmouse_user_data_dir()
+        && std::fs::create_dir_all(&user_dir).is_ok()
+    {
+        let dest = user_dir.join(name);
+        if std::fs::write(&dest, embedded).is_ok() {
+            return dest;
+        }
+    }
+
+    // Last resort: return the dev path even if it doesn't exist; the caller
+    // will emit a clear "not found" error message with the path.
+    dev_path
+}
+
 fn overlay_script() -> PathBuf {
-    std::env::var_os("NOTMOUSE_OVERLAY_SCRIPT").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../platform/linux/gnome/overlay.js"),
-        PathBuf::from,
-    )
+    resolve_script("overlay.js", "NOTMOUSE_OVERLAY_SCRIPT", OVERLAY_JS)
 }
 
 fn test_bench_script() -> PathBuf {
-    std::env::var_os("NOTMOUSE_TEST_BENCH_SCRIPT").map_or_else(
-        || {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../platform/linux/gnome/test_bench.js")
-        },
-        PathBuf::from,
-    )
+    resolve_script("test_bench.js", "NOTMOUSE_TEST_BENCH_SCRIPT", TEST_BENCH_JS)
 }
 
 fn launch_test_bench() -> Result<(), String> {
