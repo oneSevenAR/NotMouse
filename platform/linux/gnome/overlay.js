@@ -173,7 +173,7 @@ function drawOverlay(area, context, width, height, state) {
     const isLocked = state.path.length >= MAX_DEPTH;
 
     // Subtly dim the screen background so elements underneath remain clearly visible
-    context.setSourceRGBA(0.02, 0.03, 0.06, isMacroView ? 0.12 : 0.24);
+    context.setSourceRGBA(0.02, 0.03, 0.06, isMacroView ? 0.08 : 0.16);
     context.rectangle(0, 0, width, height);
     context.fill();
 
@@ -331,11 +331,39 @@ function keyCharacter(keyval) {
     return codePoint === 0 ? '' : String.fromCodePoint(codePoint).toLowerCase();
 }
 
-function emitSelection(state, action) {
+function getScreenCoordinates(state, window) {
     const target = state.point || {
         x: state.rect.x + state.rect.width / 2,
         y: state.rect.y + state.rect.height / 2,
     };
+    if (!window) {
+        return target;
+    }
+    const display = Gdk.Display.get_default();
+    const monitors = display ? display.get_monitors() : null;
+    if (!monitors || monitors.get_n_items() === 0) {
+        return target;
+    }
+    const monitor = monitors.get_item(0);
+    const geom = monitor.get_geometry();
+    const winW = window.get_width();
+    const winH = window.get_height();
+
+    // Workarea vertical offset (e.g. GNOME top status bar) and horizontal offset
+    const offsetY = Math.max(0, geom.height - winH);
+    const offsetX = Math.max(0, geom.width - winW);
+
+    const pixelX = target.x * winW;
+    const pixelY = target.y * winH;
+
+    return {
+        x: (offsetX + pixelX) / geom.width,
+        y: (offsetY + pixelY) / geom.height,
+    };
+}
+
+function emitSelection(state, action, window) {
+    const target = getScreenCoordinates(state, window);
     print(JSON.stringify({
         event: 'selected',
         strokes: state.path.join(''),
@@ -407,10 +435,7 @@ function runOverlay() {
                 }
 
                 if (keyval === Gdk.KEY_space || keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter) {
-                    const target = state.point || {
-                        x: state.rect.x + state.rect.width / 2,
-                        y: state.rect.y + state.rect.height / 2,
-                    };
+                    const target = getScreenCoordinates(state, window);
                     print(JSON.stringify({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
@@ -503,27 +528,21 @@ function runOverlay() {
                 // Actions
                 if (keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || keyval === Gdk.KEY_space) {
                     if (state.dragging) {
-                        const dropTarget = state.point || {
-                            x: state.rect.x + state.rect.width / 2,
-                            y: state.rect.y + state.rect.height / 2,
-                        };
+                        const dropTarget = getScreenCoordinates(state, window);
                         print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
                         print(JSON.stringify({ event: 'release', button: 'left' }));
                         state.dragging = false;
                         application.quit();
                         return true;
                     }
-                    emitSelection(state, isShift ? 'right-click' : 'click');
+                    emitSelection(state, isShift ? 'right-click' : 'click', window);
                     application.quit();
                     return true;
                 }
 
                 // Click and stay (chained click)
                 if (char === 'c') {
-                    const target = state.point || {
-                        x: state.rect.x + state.rect.width / 2,
-                        y: state.rect.y + state.rect.height / 2,
-                    };
+                    const target = getScreenCoordinates(state, window);
                     print(JSON.stringify({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
@@ -538,17 +557,17 @@ function runOverlay() {
                 }
 
                 if (char === 'r') {
-                    emitSelection(state, 'right-click');
+                    emitSelection(state, 'right-click', window);
                     application.quit();
                     return true;
                 }
                 if (char === 'd') {
-                    emitSelection(state, 'double-click');
+                    emitSelection(state, 'double-click', window);
                     application.quit();
                     return true;
                 }
                 if (char === 'm') {
-                    emitSelection(state, 'middle-click');
+                    emitSelection(state, 'middle-click', window);
                     application.quit();
                     return true;
                 }
@@ -557,10 +576,7 @@ function runOverlay() {
                 if (char === 'v') {
                     if (!state.dragging) {
                         state.dragging = true;
-                        const target = state.point || {
-                            x: state.rect.x + state.rect.width / 2,
-                            y: state.rect.y + state.rect.height / 2,
-                        };
+                        const target = getScreenCoordinates(state, window);
                         state.dragStartPoint = target;
                         print(JSON.stringify({ event: 'move', x: target.x, y: target.y }));
                         print(JSON.stringify({ event: 'press', button: 'left' }));
@@ -572,10 +588,7 @@ function runOverlay() {
                         drawingArea.queue_draw();
                         return true;
                     } else {
-                        const dropTarget = state.point || {
-                            x: state.rect.x + state.rect.width / 2,
-                            y: state.rect.y + state.rect.height / 2,
-                        };
+                        const dropTarget = getScreenCoordinates(state, window);
                         print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
                         print(JSON.stringify({ event: 'release', button: 'left' }));
                         state.dragging = false;
@@ -587,10 +600,7 @@ function runOverlay() {
                 // Scroll Mode (Continuous Interactive Kinetic Scroll)
                 if (char === 's' || char === 'w') {
                     state.mode = 'scroll';
-                    const target = state.point || {
-                        x: state.rect.x + state.rect.width / 2,
-                        y: state.rect.y + state.rect.height / 2,
-                    };
+                    const target = getScreenCoordinates(state, window);
                     const surface = window.get_surface();
                     if (surface) {
                         surface.set_input_region(new Cairo.Region());
@@ -647,17 +657,14 @@ function runOverlay() {
             // Stroke 1 confirmation with Enter/Space for macro region center
             if (state.path.length === 1 && (keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || keyval === Gdk.KEY_space)) {
                 if (state.dragging) {
-                    const dropTarget = {
-                        x: state.rect.x + state.rect.width / 2,
-                        y: state.rect.y + state.rect.height / 2,
-                    };
+                    const dropTarget = getScreenCoordinates(state, window);
                     print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
                     print(JSON.stringify({ event: 'release', button: 'left' }));
                     state.dragging = false;
                     application.quit();
                     return true;
                 }
-                emitSelection(state, isShift ? 'right-click' : 'click');
+                emitSelection(state, isShift ? 'right-click' : 'click', window);
                 application.quit();
                 return true;
             }
@@ -692,7 +699,7 @@ function runOverlay() {
             const geometry = monitor.get_geometry();
             window.set_default_size(geometry.width, geometry.height);
         }
-        window.fullscreen();
+        window.maximize();
         window.present();
         drawingArea.grab_focus();
 
