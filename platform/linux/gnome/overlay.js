@@ -399,16 +399,24 @@ function runOverlay() {
 
         const provider = new Gtk.CssProvider();
         provider.load_from_data(
-            `window {
-                 background: transparent;
-                 background-color: transparent;
+            `window,
+             window.background,
+             window.fullscreen,
+             .background,
+             .fullscreen,
+             .notmouse-overlay,
+             drawingarea {
+                 background-color: rgba(0, 0, 0, 0);
+                 background-image: none;
+                 box-shadow: none;
+                 border: none;
              }`,
             -1,
         );
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(),
             provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            Gtk.STYLE_PROVIDER_PRIORITY_USER,
         );
 
         const drawingArea = new Gtk.DrawingArea({
@@ -417,6 +425,9 @@ function runOverlay() {
             focusable: true,
         });
         drawingArea.set_draw_func((area, context, width, height) => {
+            context.setOperator(Cairo.Operator.CLEAR);
+            context.paint();
+            context.setOperator(Cairo.Operator.OVER);
             drawOverlay(area, context, width, height, state);
         });
 
@@ -699,7 +710,7 @@ function runOverlay() {
             const geometry = monitor.get_geometry();
             window.set_default_size(geometry.width, geometry.height);
         }
-        window.maximize();
+        window.fullscreen();
         window.present();
         drawingArea.grab_focus();
 
