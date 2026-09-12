@@ -19,7 +19,7 @@
     2. Embed fallback script into binary with `include_str!("../../platform/linux/gnome/overlay.js")` and write to `~/.local/share/notmouse/overlay.js` on first run if no file exists.
     3. Apply the same resolution logic to `test_bench_script()`.
 
-- [ ] **Repository Systemd Service File**
+- [x] **Repository Systemd Service File**
   - **Issue:** The running systemd service was installed manually into `~/.config/systemd/user/notmouse.service` and is not tracked in git.
   - **Action Plan:**
     - Create `platform/linux/systemd/notmouse.service` using standard specifiers:
@@ -38,7 +38,7 @@
       WantedBy=graphical-session.target
       ```
 
-- [ ] **One-Line Installer Script (`install.sh`)**
+- [x] **One-Line Installer Script (`install.sh`)**
   - **Issue:** Setting up !mouse currently requires several manual steps (compilation, symlinking, systemd enablement, GNOME shortcut registration).
   - **Action Plan:**
     - Create `install.sh` in the repository root that:

@@ -5,7 +5,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
+keywords = ["accessibility", "keyboard", "mouse", "wayland", "gnome"]
+categories = ["command-line-utilities", "accessibility"]
+readme = "../../README.md"
 
 [dependencies]
 notmouse-core = { path = "../notmouse-core" }
