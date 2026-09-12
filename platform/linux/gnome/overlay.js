@@ -228,7 +228,7 @@ function drawOverlay(area, context, width, height, state) {
         context.rectangle(barX, barY, barWidth, barHeight);
         context.stroke();
 
-        const hudText = '📌 TOP BAR MODE  •  [a] Activities  •  [s] Clock  •  [d] Settings/WiFi  •  [h/l] Nudge  •  [Enter] Click  •  [Tab] Grid';
+        const hudText = '📌 TOP BAR MODE  •  [a] Activities  •  [s] Clock  •  [d] Settings/WiFi  •  [c] Click & Stay  •  [Enter] Click  •  [Tab] Grid';
         const hudLayout = area.create_pango_layout(hudText);
         hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 12'));
         const [textW, textH] = hudLayout.get_pixel_size();
@@ -526,6 +526,22 @@ function runOverlay() {
                 if (char === 'r') {
                     emitSelection(state, 'right-click', window);
                     application.quit();
+                    return true;
+                }
+                if (char === 'c') {
+                    const target = getScreenCoordinates(state, window);
+                    print(JSON.stringify({
+                        event: 'click',
+                        button: isShift ? 'right' : 'left',
+                        normalized: { x: target.x, y: target.y },
+                    }));
+                    state.mode = 'grid';
+                    state.path = [];
+                    state.history = [];
+                    state.rect = { x: 0, y: 0, width: 1, height: 1 };
+                    state.point = null;
+                    state.topBarTarget = null;
+                    drawingArea.queue_draw();
                     return true;
                 }
                 if (char === 'a') {
