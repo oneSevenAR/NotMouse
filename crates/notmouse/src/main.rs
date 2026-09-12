@@ -341,6 +341,9 @@ const OVERLAY_JS: &str = include_str!("../../../platform/linux/gnome/overlay.js"
 /// Embedded test-bench script bytes.
 const TEST_BENCH_JS: &str = include_str!("../../../platform/linux/gnome/test_bench.js");
 
+/// Embedded AT-SPI accessibility scanner helper script bytes.
+const ATSPI_SCANNER_PY: &str = include_str!("../../../platform/linux/gnome/atspi_scanner.py");
+
 /// Return the user-level data directory for !mouse scripts:
 /// `$XDG_DATA_HOME/notmouse` or `~/.local/share/notmouse`.
 fn notmouse_user_data_dir() -> Option<PathBuf> {
@@ -419,6 +422,12 @@ fn resolve_script(name: &str, env_var: &str, embedded: &str) -> PathBuf {
 }
 
 fn overlay_script() -> PathBuf {
+    // Ensure helper scanner is also available in target directory if needed
+    let _ = resolve_script(
+        "atspi_scanner.py",
+        "NOTMOUSE_ATSPI_SCANNER",
+        ATSPI_SCANNER_PY,
+    );
     resolve_script("overlay.js", "NOTMOUSE_OVERLAY_SCRIPT", OVERLAY_JS)
 }
 

@@ -109,6 +109,7 @@ info "Installing overlay assets to ${ASSET_DEST}…"
 mkdir -p "${ASSET_DEST}"
 install -m 644 "${REPO_ROOT}/platform/linux/gnome/overlay.js"    "${ASSET_DEST}/overlay.js"
 install -m 644 "${REPO_ROOT}/platform/linux/gnome/test_bench.js" "${ASSET_DEST}/test_bench.js"
+install -m 755 "${REPO_ROOT}/platform/linux/gnome/atspi_scanner.py" "${ASSET_DEST}/atspi_scanner.py"
 ok "Assets installed."
 
 # ── systemd user service ──────────────────────────────────────────────────────

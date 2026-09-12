@@ -24,6 +24,138 @@ function childRect(parent, index) {
     };
 }
 
+// ── AT-SPI Accessibility Semantic Target Scanner & Cache ───────────────────
+let _cachedElements = [];
+let _cacheTimestamp = 0;
+const CACHE_TTL_MS = 3000; // Reuse desktop accessibility tree for 3 seconds
+
+function getScannerScriptPath() {
+    const devPath = GLib.build_filenamev([GLib.path_get_dirname(new Error().fileName || ''), 'atspi_scanner.py']);
+    if (GLib.file_test(devPath, GLib.FileTest.IS_REGULAR)) {
+        return devPath;
+    }
+    const userPath = GLib.build_filenamev([GLib.get_user_data_dir(), 'notmouse', 'atspi_scanner.py']);
+    if (GLib.file_test(userPath, GLib.FileTest.IS_REGULAR)) {
+        return userPath;
+    }
+    return '/usr/local/share/notmouse/atspi_scanner.py';
+}
+
+function fetchElementsAsync(bounds, callback) {
+    const now = Date.now();
+    if (_cachedElements.length > 0 && (now - _cacheTimestamp < CACHE_TTL_MS)) {
+        if (bounds) {
+            const filtered = _cachedElements.filter(e =>
+                e.cx >= bounds.minX && e.cx <= bounds.maxX &&
+                e.cy >= bounds.minY && e.cy <= bounds.maxY
+            );
+            callback(filtered);
+            return;
+        }
+        callback(_cachedElements);
+        return;
+    }
+
+    const script = getScannerScriptPath();
+    if (!GLib.file_test(script, GLib.FileTest.IS_REGULAR)) {
+        callback([]);
+        return;
+    }
+
+    const argv = ['python3', script];
+    if (bounds) {
+        argv.push(String(bounds.minX), String(bounds.maxX), String(bounds.minY), String(bounds.maxY));
+    }
+
+    try {
+        const [success, pid, stdin, stdout, stderr] = GLib.spawn_async_with_pipes(
+            null,
+            argv,
+            null,
+            GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+            null
+        );
+        if (!success) {
+            callback([]);
+            return;
+        }
+
+        const stdoutChannel = GLib.IOChannel.unix_new(stdout);
+        let output = '';
+        GLib.io_add_watch(stdoutChannel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, (_ch, cond) => {
+            if (cond & GLib.IOCondition.IN) {
+                const [status, str] = stdoutChannel.read_to_end();
+                if (status === GLib.IOStatus.NORMAL) {
+                    output += str;
+                }
+            }
+            if (cond & GLib.IOCondition.HUP) {
+                GLib.spawn_close_pid(pid);
+                try {
+                    const parsed = JSON.parse(output);
+                    if (!bounds) {
+                        _cachedElements = parsed;
+                        _cacheTimestamp = Date.now();
+                    }
+                    callback(parsed);
+                } catch (e) {
+                    callback([]);
+                }
+                return GLib.SOURCE_REMOVE;
+            }
+            return GLib.SOURCE_CONTINUE;
+        });
+    } catch (e) {
+        callback([]);
+    }
+}
+
+function snapToNearestElement(state, window, drawingArea) {
+    if (!state.point || !window) {
+        return;
+    }
+    const winW = window.get_width() || 2560;
+    const winH = window.get_height() || 1411;
+
+    // Current reticle target in window pixel coordinates
+    const targetPxX = state.point.x * winW;
+    const targetPxY = state.point.y * winH;
+
+    // Search nearby elements (or cached elements) within snap radius
+    const candidates = (state.nearbyElements && state.nearbyElements.length > 0)
+        ? state.nearbyElements
+        : _cachedElements;
+
+    if (!candidates || candidates.length === 0) {
+        return;
+    }
+
+    // Snap radius: 110 pixels in window coordinate space
+    const SNAP_RADIUS_PX = 110;
+    let bestElem = null;
+    let bestDistSq = SNAP_RADIUS_PX * SNAP_RADIUS_PX;
+
+    for (const elem of candidates) {
+        const dx = elem.cx - targetPxX;
+        const dy = elem.cy - targetPxY;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            bestElem = elem;
+        }
+    }
+
+    if (bestElem) {
+        state.snappedElement = bestElem;
+        // Magnetically shift normalized point directly onto center of the UI control!
+        state.point.x = bestElem.cx / winW;
+        state.point.y = bestElem.cy / winH;
+        if (drawingArea) {
+            drawingArea.queue_draw();
+        }
+    }
+}
+
 function drawLabel(area, context, label, x, y, options = {}) {
     const fontSize = options.fontSize || 22;
     const fontDesc = options.font || `Sans Bold ${fontSize}`;
@@ -51,9 +183,62 @@ function drawLabel(area, context, label, x, y, options = {}) {
     PangoCairo.show_layout(context, layout);
 }
 
-function drawReticle(context, x, y) {
+function drawReticle(context, x, y, isSnapped = false) {
     const radius = 18;
 
+    if (isSnapped) {
+        // High-contrast electric cyan lock ring indicating snapped UI element
+        context.setSourceRGBA(0.18, 0.85, 0.98, 0.40);
+        context.setLineWidth(5.0);
+        context.arc(x, y, radius + 3, 0, 2 * Math.PI);
+        context.stroke();
+
+        context.setSourceRGBA(0.18, 0.85, 0.98, 1.0);
+        context.setLineWidth(2.2);
+        context.arc(x, y, radius, 0, 2 * Math.PI);
+        context.stroke();
+
+        // Target corner brackets
+        context.setLineWidth(2.0);
+        const bLen = 6;
+        // Top-left bracket
+        context.moveTo(x - radius - 2, y - radius + bLen);
+        context.lineTo(x - radius - 2, y - radius - 2);
+        context.lineTo(x - radius + bLen, y - radius - 2);
+        // Top-right bracket
+        context.moveTo(x + radius + 2 - bLen, y - radius - 2);
+        context.lineTo(x + radius + 2, y - radius - 2);
+        context.lineTo(x + radius + 2, y - radius + bLen);
+        // Bottom-left bracket
+        context.moveTo(x - radius - 2, y + radius - bLen);
+        context.lineTo(x - radius - 2, y + radius + 2);
+        context.lineTo(x - radius + bLen, y + radius + 2);
+        // Bottom-right bracket
+        context.moveTo(x + radius + 2 - bLen, y + radius + 2);
+        context.lineTo(x + radius + 2, y + radius + 2);
+        context.lineTo(x + radius + 2, y + radius - bLen);
+        context.stroke();
+
+        // Crosshair ticks
+        context.setLineWidth(1.8);
+        context.moveTo(x - radius - 8, y);
+        context.lineTo(x - radius + 4, y);
+        context.moveTo(x + radius - 4, y);
+        context.lineTo(x + radius + 8, y);
+        context.moveTo(x, y - radius - 8);
+        context.lineTo(x, y - radius + 4);
+        context.moveTo(x, y + radius - 4);
+        context.lineTo(x, y + radius + 8);
+        context.stroke();
+
+        // Center dot
+        context.setSourceRGBA(0.18, 0.85, 0.98, 1.0);
+        context.arc(x, y, 3.5, 0, 2 * Math.PI);
+        context.fill();
+        return;
+    }
+
+    // Default golden reticle
     // Outer glow ring
     context.setSourceRGBA(0.97, 0.72, 0.18, 0.35);
     context.setLineWidth(4.0);
@@ -357,14 +542,19 @@ function drawOverlay(area, context, width, height, state) {
         // Target reticle
         const reticleX = (state.point ? state.point.x : state.rect.x + state.rect.width / 2) * width;
         const reticleY = (state.point ? state.point.y : state.rect.y + state.rect.height / 2) * height;
-        drawReticle(context, reticleX, reticleY);
+        const isSnapped = Boolean(state.snappedElement);
+        drawReticle(context, reticleX, reticleY, isSnapped);
 
-        // Label above reticle
-        drawLabel(area, context, state.path.join(''), reticleX, reticleY - 32, {
-            fontSize: 16,
-            paddingX: 10,
+        // Label above reticle (shows chord or snapped element name)
+        const badgeText = isSnapped && state.snappedElement.name
+            ? `${state.path.join('').toUpperCase()} • ${state.snappedElement.name.slice(0, 18)}`
+            : state.path.join('').toUpperCase();
+
+        drawLabel(area, context, badgeText, reticleX, reticleY - 32, {
+            fontSize: isSnapped ? 13 : 16,
+            paddingX: isSnapped ? 8 : 10,
             paddingY: 5,
-            bg: [0.97, 0.72, 0.18, 0.98],
+            bg: isSnapped ? [0.10, 0.82, 0.95, 0.96] : [0.97, 0.72, 0.18, 0.98],
             fg: [0.05, 0.06, 0.09, 1.0],
         });
     }
@@ -384,7 +574,13 @@ function drawOverlay(area, context, width, height, state) {
     } else if (!isLocked) {
         breadcrumb = `Region ${state.path[0].toUpperCase()}  •  Stroke 2: Choose target  •  Enter for region center  •  Backspace to undo`;
     } else {
-        breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  s: Scroll Mode  •  v: Drag Mode  •  c: Click & Stay  •  r/d/m: Other Clicks`;
+        if (state.snappedElement) {
+            const role = state.snappedElement.role || 'element';
+            const name = state.snappedElement.name ? ` "${state.snappedElement.name.slice(0, 24)}"` : '';
+            breadcrumb = `🧲 SNAP LOCKED: [${role}]${name}  •  [Enter/Space] Click  •  [c] Click & Stay  •  [h/j/k/l] Nudge`;
+        } else {
+            breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  s: Scroll Mode  •  v: Drag Mode  •  c: Click & Stay  •  r/d/m: Other Clicks`;
+        }
     }
 
     const layout = area.create_pango_layout(`${breadcrumb}  •  Esc to cancel`);
@@ -458,6 +654,8 @@ function runOverlay() {
             lastScrollDir: null,
             dragging: false,
             dragStartPoint: null,
+            snappedElement: null,
+            nearbyElements: [],
         };
         const window = new Gtk.ApplicationWindow({
             application,
@@ -882,12 +1080,37 @@ function runOverlay() {
             state.rect = childRect(state.rect, index);
             state.path.push(HINTS[index]);
 
-            // If 2nd stroke was just entered, initialize target lock point (do NOT close!)
-            if (state.path.length >= MAX_DEPTH) {
-                state.point = {
-                    x: state.rect.x + state.rect.width / 2,
-                    y: state.rect.y + state.rect.height / 2,
+            // If Stroke 1 was just entered, asynchronously fetch elements inside the focused macro region
+            if (state.path.length === 1) {
+                state.snappedElement = null;
+                state.nearbyElements = [];
+                const winW = window.get_width() || 2560;
+                const winH = window.get_height() || 1411;
+                const bounds = {
+                    minX: state.rect.x * winW - 20,
+                    maxX: (state.rect.x + state.rect.width) * winW + 20,
+                    minY: state.rect.y * winH - 20,
+                    maxY: (state.rect.y + state.rect.height) * winH + 20,
                 };
+                fetchElementsAsync(bounds, (elements) => {
+                    if (state.path.length >= 1) {
+                        state.nearbyElements = elements;
+                        // If already locked on stroke 2, attempt immediate magnetic snap!
+                        if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
+                            snapToNearestElement(state, window, drawingArea);
+                        }
+                    }
+                });
+            }
+
+            // If 2nd stroke was just entered, initialize target lock point and attempt magnetic snap!
+            if (state.path.length >= MAX_DEPTH) {
+                const centerNormX = state.rect.x + state.rect.width / 2;
+                const centerNormY = state.rect.y + state.rect.height / 2;
+                state.point = { x: centerNormX, y: centerNormY };
+                state.snappedElement = null;
+
+                snapToNearestElement(state, window, drawingArea);
             }
 
             drawingArea.queue_draw();
@@ -905,6 +1128,13 @@ function runOverlay() {
         window.maximize();
         window.present();
         drawingArea.grab_focus();
+
+        // Background prefetch all active desktop accessible elements for instant snapping
+        fetchElementsAsync(null, (elements) => {
+            if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
+                snapToNearestElement(state, window, drawingArea);
+            }
+        });
 
         if (GLib.getenv('NOTMOUSE_SMOKE_TEST') === '1') {
             GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
