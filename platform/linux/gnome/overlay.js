@@ -692,7 +692,7 @@ function runOverlay() {
             const geometry = monitor.get_geometry();
             window.set_default_size(geometry.width, geometry.height);
         }
-        window.maximize();
+        window.fullscreen();
         window.present();
         drawingArea.grab_focus();
 
