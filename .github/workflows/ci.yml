@@ -43,6 +43,11 @@ jobs:
             libgtk-4-dev \
             libudev-dev
 
+      - name: Setup uinput permissions
+        run: |
+          sudo modprobe uinput || true
+          sudo chmod 0666 /dev/uinput || true
+
       - name: cargo fmt --check
         run: cargo fmt --check
 
