@@ -169,6 +169,75 @@ function drawOverlay(area, context, width, height, state) {
         return;
     }
 
+    if (state.mode === 'topbar') {
+        // Subtle background tint so desktop underneath remains completely clear
+        context.setSourceRGBA(0.01, 0.02, 0.04, 0.06);
+        context.rectangle(0, 0, width, height);
+        context.fill();
+
+        // 3 top bar target zones along top edge
+        const zones = [
+            { key: 'A', id: 'a', name: 'ACTIVITIES', x: 0.04 * width },
+            { key: 'S', id: 's', name: 'CLOCK / DATE', x: 0.50 * width },
+            { key: 'D', id: 'd', name: 'SETTINGS / WIFI', x: 0.96 * width },
+        ];
+
+        // Glowing golden top border indicating active top bar mode
+        context.setSourceRGBA(0.97, 0.72, 0.18, 0.90);
+        context.setLineWidth(3.0);
+        context.moveTo(0, 1.5);
+        context.lineTo(width, 1.5);
+        context.stroke();
+
+        for (const z of zones) {
+            const isSelected = state.topBarTarget === z.id;
+            drawLabel(area, context, `${z.key} • ${z.name}`, z.x, 26, {
+                fontSize: 12,
+                paddingX: 12,
+                paddingY: 6,
+                bg: isSelected ? [0.97, 0.72, 0.18, 0.95] : [0.10, 0.14, 0.22, 0.95],
+                fg: isSelected ? [0.05, 0.08, 0.12, 1.0] : [0.97, 0.72, 0.18, 1.0],
+            });
+        }
+
+        // Draw reticle at current position pointing up into the bar
+        const reticleX = (state.point ? state.point.x : 0.96) * width;
+        const reticleY = 16;
+        drawReticle(context, reticleX, reticleY);
+
+        // Upward arrow on reticle pointing into the top bar
+        context.setSourceRGBA(0.97, 0.72, 0.18, 1.0);
+        context.moveTo(reticleX, 2);
+        context.lineTo(reticleX - 8, 14);
+        context.lineTo(reticleX + 8, 14);
+        context.closePath();
+        context.fill();
+
+        // Floating HUD at bottom
+        const barWidth = Math.min(width - 40, 820);
+        const barHeight = 44;
+        const barX = (width - barWidth) / 2;
+        const barY = height - barHeight - 24;
+
+        context.setSourceRGBA(0.06, 0.08, 0.12, 0.92);
+        context.rectangle(barX, barY, barWidth, barHeight);
+        context.fill();
+
+        context.setSourceRGBA(0.97, 0.72, 0.18, 0.85);
+        context.setLineWidth(1.8);
+        context.rectangle(barX, barY, barWidth, barHeight);
+        context.stroke();
+
+        const hudText = '📌 TOP BAR MODE  •  [a] Activities  •  [s] Clock  •  [d] Settings/WiFi  •  [h/l] Nudge  •  [Enter] Click  •  [Tab] Grid';
+        const hudLayout = area.create_pango_layout(hudText);
+        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 12'));
+        const [textW, textH] = hudLayout.get_pixel_size();
+        context.setSourceRGBA(0.95, 0.97, 1.0, 1.0);
+        context.moveTo(barX + (barWidth - textW) / 2, barY + (barHeight - textH) / 2);
+        PangoCairo.show_layout(context, hudLayout);
+        return;
+    }
+
     const isMacroView = state.path.length === 0;
     const isLocked = state.path.length >= MAX_DEPTH;
 
@@ -311,7 +380,7 @@ function drawOverlay(area, context, width, height, state) {
             breadcrumb = `🎯 DROP TARGET LOCKED: ${state.path.join('').toUpperCase()}  •  [v / Space / Enter] DROP  •  [Esc] Cancel`;
         }
     } else if (isMacroView) {
-        breadcrumb = '!mouse  •  Stroke 1: Choose region (A S D F J K L G H)';
+        breadcrumb = '!mouse  •  Stroke 1: Choose region (A-L)  •  [t] Top Bar';
     } else if (!isLocked) {
         breadcrumb = `Region ${state.path[0].toUpperCase()}  •  Stroke 2: Choose target  •  Enter for region center  •  Backspace to undo`;
     } else {
@@ -435,6 +504,81 @@ function runOverlay() {
         keyboard.connect('key-pressed', (_controller, keyval, _keycode, modifierState) => {
             const char = keyCharacter(keyval);
             const isShift = (modifierState & Gdk.ModifierType.SHIFT_MASK) !== 0;
+
+            // Handle Top Bar Mode
+            if (state.mode === 'topbar') {
+                if (keyval === Gdk.KEY_Escape || char === 'q') {
+                    application.quit();
+                    return true;
+                }
+                if (keyval === Gdk.KEY_Tab || keyval === Gdk.KEY_BackSpace) {
+                    state.mode = 'grid';
+                    state.point = null;
+                    state.topBarTarget = null;
+                    drawingArea.queue_draw();
+                    return true;
+                }
+                if (keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || keyval === Gdk.KEY_space) {
+                    emitSelection(state, isShift ? 'right-click' : 'click', window);
+                    application.quit();
+                    return true;
+                }
+                if (char === 'r') {
+                    emitSelection(state, 'right-click', window);
+                    application.quit();
+                    return true;
+                }
+                if (char === 'a') {
+                    if (state.topBarTarget === 'a') {
+                        emitSelection(state, isShift ? 'right-click' : 'click', window);
+                        application.quit();
+                        return true;
+                    }
+                    state.topBarTarget = 'a';
+                    state.point = { x: 0.040, y: -0.010 };
+                    drawingArea.queue_draw();
+                    return true;
+                }
+                if (char === 's') {
+                    if (state.topBarTarget === 's') {
+                        emitSelection(state, isShift ? 'right-click' : 'click', window);
+                        application.quit();
+                        return true;
+                    }
+                    state.topBarTarget = 's';
+                    state.point = { x: 0.500, y: -0.010 };
+                    drawingArea.queue_draw();
+                    return true;
+                }
+                if (char === 'd') {
+                    if (state.topBarTarget === 'd') {
+                        emitSelection(state, isShift ? 'right-click' : 'click', window);
+                        application.quit();
+                        return true;
+                    }
+                    state.topBarTarget = 'd';
+                    state.point = { x: 0.965, y: -0.010 };
+                    drawingArea.queue_draw();
+                    return true;
+                }
+
+                // Nudge inside top bar
+                const step = isShift ? 0.02 : 0.005;
+                if (!state.point) {
+                    state.point = { x: 0.965, y: -0.010 };
+                }
+                if (char === 'h' || keyval === Gdk.KEY_Left) {
+                    state.point.x = Math.max(0, state.point.x - step);
+                    drawingArea.queue_draw();
+                    return true;
+                }
+                if (char === 'l' || keyval === Gdk.KEY_Right) {
+                    state.point.x = Math.min(1, state.point.x + step);
+                    drawingArea.queue_draw();
+                    return true;
+                }
+                return true;
+            }
 
             // Handle Scroll Mode
             if (state.mode === 'scroll') {
@@ -642,6 +786,15 @@ function runOverlay() {
                     };
                 }
 
+                let minY = 0;
+                const display = Gdk.Display.get_default();
+                const monitors = display ? display.get_monitors() : null;
+                if (monitors && monitors.get_n_items() > 0) {
+                    const geom = monitors.get_item(0).get_geometry();
+                    const winH = window.get_height();
+                    minY = -(Math.max(0, geom.height - winH) / winH);
+                }
+
                 let moved = false;
                 if (char === 'h' || keyval === Gdk.KEY_Left) {
                     state.point.x = Math.max(0, state.point.x - step);
@@ -650,7 +803,7 @@ function runOverlay() {
                     state.point.x = Math.min(1, state.point.x + step);
                     moved = true;
                 } else if (char === 'k' || keyval === Gdk.KEY_Up) {
-                    state.point.y = Math.max(0, state.point.y - step);
+                    state.point.y = Math.max(minY, state.point.y - step);
                     moved = true;
                 } else if (char === 'j' || keyval === Gdk.KEY_Down) {
                     state.point.y = Math.min(1, state.point.y + step);
@@ -677,6 +830,15 @@ function runOverlay() {
                 }
                 emitSelection(state, isShift ? 'right-click' : 'click', window);
                 application.quit();
+                return true;
+            }
+
+            // Stroke 1 Top Bar Mode shortcut
+            if (state.path.length === 0 && (char === 't' || keyval === Gdk.KEY_grave)) {
+                state.mode = 'topbar';
+                state.topBarTarget = null;
+                state.point = { x: 0.965, y: -0.010 };
+                drawingArea.queue_draw();
                 return true;
             }
 
@@ -710,7 +872,7 @@ function runOverlay() {
             const geometry = monitor.get_geometry();
             window.set_default_size(geometry.width, geometry.height);
         }
-        window.fullscreen();
+        window.maximize();
         window.present();
         drawingArea.grab_focus();
 
