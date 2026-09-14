@@ -176,6 +176,9 @@ function snapToNearestElement(state, window, drawingArea) {
         state.snapCandidates = [];
         state.snapIndex = -1;
         state.snappedElement = null;
+        if (drawingArea) {
+            drawingArea.queue_draw();
+        }
         return;
     }
 
@@ -272,6 +275,20 @@ function drawLabel(area, context, label, x, y, options = {}) {
     context.setSourceRGBA(fg[0], fg[1], fg[2], fg[3]);
     context.moveTo(x - textWidth / 2, y - textHeight / 2);
     PangoCairo.show_layout(context, layout);
+}
+
+function startRippleAnimation(drawingArea, state) {
+    if (!drawingArea || !state) return;
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+        if (!state.lastClickTime) return GLib.SOURCE_REMOVE;
+        const elapsedUs = GLib.get_monotonic_time() - state.lastClickTime;
+        if (elapsedUs >= 280 * 1000) {
+            drawingArea.queue_draw();
+            return GLib.SOURCE_REMOVE;
+        }
+        drawingArea.queue_draw();
+        return GLib.SOURCE_CONTINUE;
+    });
 }
 
 function drawReticle(context, x, y, isSnapped = false, lastClickTime = 0) {
@@ -1058,6 +1075,13 @@ function runOverlay() {
 
                     state.lastClickTime = GLib.get_monotonic_time();
 
+                    // Invalidate stale element cache since the click may mutate/destroy UI elements
+                    _cachedElements = [];
+                    _cacheTimestamp = 0;
+                    state.snappedElement = null;
+                    state.snapCandidates = [];
+                    state.snapIndex = -1;
+
                     // Re-present overlay immediately after click completes (~60ms),
                     // KEEPING all state completely locked in place!
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 60, () => {
@@ -1065,6 +1089,17 @@ function runOverlay() {
                         window.present();
                         drawingArea.grab_focus();
                         drawingArea.queue_draw();
+                        startRippleAnimation(drawingArea, state);
+
+                        const targetPid = detectActiveProcessPid();
+                        fetchElementsAsync({ pid: targetPid }, (elements) => {
+                            if (elements && elements.length > 0) {
+                                if (state.path.length >= MAX_DEPTH && state.point) {
+                                    snapToNearestElement(state, window, drawingArea);
+                                }
+                            }
+                        });
+
                         return GLib.SOURCE_REMOVE;
                     });
                     return true;
@@ -1248,6 +1283,13 @@ function runOverlay() {
 
                     state.lastClickTime = GLib.get_monotonic_time();
 
+                    // Invalidate stale element cache since the click may mutate/destroy UI elements
+                    _cachedElements = [];
+                    _cacheTimestamp = 0;
+                    state.snappedElement = null;
+                    state.snapCandidates = [];
+                    state.snapIndex = -1;
+
                     // Re-present overlay immediately after click completes (~60ms),
                     // KEEPING all state (coordinates, micro-cell, reticle lock) completely locked!
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 60, () => {
@@ -1255,6 +1297,15 @@ function runOverlay() {
                         window.present();
                         drawingArea.grab_focus();
                         drawingArea.queue_draw();
+                        startRippleAnimation(drawingArea, state);
+
+                        const targetPid = detectActiveProcessPid();
+                        fetchElementsAsync({ pid: targetPid }, (elements) => {
+                            if (state.path.length >= MAX_DEPTH && state.point) {
+                                snapToNearestElement(state, window, drawingArea);
+                            }
+                        });
+
                         return GLib.SOURCE_REMOVE;
                     });
                     return true;
