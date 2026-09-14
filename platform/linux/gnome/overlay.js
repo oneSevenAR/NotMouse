@@ -150,12 +150,11 @@ function snapToNearestElement(state, window, drawingArea) {
         return;
     }
 
-    // Strictly confine candidates to the selected micro cell (+ 20px padding for edge buttons)
-    const pad = 20;
-    const cellMinX = state.rect.x * winW - pad;
-    const cellMaxX = (state.rect.x + state.rect.width) * winW + pad;
-    const cellMinY = state.rect.y * winH - pad;
-    const cellMaxY = (state.rect.y + state.rect.height) * winH + pad;
+    // Strictly confine candidates inside the selected micro cell boundary
+    const cellMinX = state.rect.x * winW;
+    const cellMaxX = (state.rect.x + state.rect.width) * winW;
+    const cellMinY = state.rect.y * winH;
+    const cellMaxY = (state.rect.y + state.rect.height) * winH;
 
     const inCell = source.filter(e =>
         e.cx >= cellMinX && e.cx <= cellMaxX &&
