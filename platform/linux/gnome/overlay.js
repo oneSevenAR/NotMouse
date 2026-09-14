@@ -176,6 +176,9 @@ function snapToNearestElement(state, window, drawingArea) {
         state.snapCandidates = [];
         state.snapIndex = -1;
         state.snappedElement = null;
+        if (drawingArea) {
+            drawingArea.queue_draw();
+        }
         return;
     }
 
@@ -274,8 +277,37 @@ function drawLabel(area, context, label, x, y, options = {}) {
     PangoCairo.show_layout(context, layout);
 }
 
-function drawReticle(context, x, y, isSnapped = false) {
+function startRippleAnimation(drawingArea, state) {
+    if (!drawingArea || !state) return;
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+        if (!state.lastClickTime) return GLib.SOURCE_REMOVE;
+        const elapsedUs = GLib.get_monotonic_time() - state.lastClickTime;
+        if (elapsedUs >= 280 * 1000) {
+            drawingArea.queue_draw();
+            return GLib.SOURCE_REMOVE;
+        }
+        drawingArea.queue_draw();
+        return GLib.SOURCE_CONTINUE;
+    });
+}
+
+function drawReticle(context, x, y, isSnapped = false, lastClickTime = 0) {
     const radius = 18;
+
+    // Visual ripple shockwave on "Click & Stay" (c)
+    if (lastClickTime) {
+        const elapsedUs = GLib.get_monotonic_time() - lastClickTime;
+        const elapsedMs = elapsedUs / 1000.0;
+        if (elapsedMs < 280) {
+            const progress = elapsedMs / 280.0;
+            const rippleR = radius + progress * 24.0;
+            const alpha = (1.0 - progress) * 0.9;
+            context.setSourceRGBA(0.20, 0.95, 0.45, alpha); // neon emerald shockwave
+            context.setLineWidth(3.0 * (1.0 - progress * 0.5));
+            context.arc(x, y, rippleR, 0, 2 * Math.PI);
+            context.stroke();
+        }
+    }
 
     if (isSnapped) {
         // High-contrast electric cyan lock ring indicating snapped UI element
@@ -496,7 +528,7 @@ function drawOverlay(area, context, width, height, state) {
         // Draw reticle at current position pointing up into the bar
         const reticleX = (state.point ? state.point.x : 0.973) * width;
         const reticleY = 16;
-        drawReticle(context, reticleX, reticleY);
+        drawReticle(context, reticleX, reticleY, false, state.lastClickTime || 0);
 
         // Upward arrow on reticle pointing into the top bar
         context.setSourceRGBA(0.97, 0.72, 0.18, 1.0);
@@ -652,7 +684,7 @@ function drawOverlay(area, context, width, height, state) {
         const reticleX = (state.point ? state.point.x : state.rect.x + state.rect.width / 2) * width;
         const reticleY = (state.point ? state.point.y : state.rect.y + state.rect.height / 2) * height;
         const isSnapped = Boolean(state.snappedElement);
-        drawReticle(context, reticleX, reticleY, isSnapped);
+        drawReticle(context, reticleX, reticleY, isSnapped, state.lastClickTime || 0);
 
         // Label above reticle (shows chord + snapped element name + cycle position)
         let badgeText;
@@ -1031,6 +1063,7 @@ function runOverlay() {
                     dismissOverlay(window, application);
                     return true;
                 }
+                // Click and stay: click and STAY locked on target!
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
                     window.set_visible(false);
@@ -1039,20 +1072,34 @@ function runOverlay() {
                         button: isShift ? 'right' : 'left',
                         normalized: { x: target.x, y: target.y },
                     });
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 260, () => {
-                        state.mode = 'grid';
-                        state.path = [];
-                        state.history = [];
-                        state.rect = { x: 0, y: 0, width: 1, height: 1 };
-                        state.point = null;
-                        state.topBarTarget = null;
-                        state.snappedElement = null;
-                        state.snapCandidates = [];
-                        state.snapIndex = -1;
+
+                    state.lastClickTime = GLib.get_monotonic_time();
+
+                    // Invalidate stale element cache since the click may mutate/destroy UI elements
+                    _cachedElements = [];
+                    _cacheTimestamp = 0;
+                    state.snappedElement = null;
+                    state.snapCandidates = [];
+                    state.snapIndex = -1;
+
+                    // Re-present overlay immediately after click completes (~60ms),
+                    // KEEPING all state completely locked in place!
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 60, () => {
                         window.set_visible(true);
                         window.present();
                         drawingArea.grab_focus();
                         drawingArea.queue_draw();
+                        startRippleAnimation(drawingArea, state);
+
+                        const targetPid = detectActiveProcessPid();
+                        fetchElementsAsync({ pid: targetPid }, (elements) => {
+                            if (elements && elements.length > 0) {
+                                if (state.path.length >= MAX_DEPTH && state.point) {
+                                    snapToNearestElement(state, window, drawingArea);
+                                }
+                            }
+                        });
+
                         return GLib.SOURCE_REMOVE;
                     });
                     return true;
@@ -1224,7 +1271,7 @@ function runOverlay() {
                     return true;
                 }
 
-                // Click and stay (chained click with momentary unmap)
+                // Click and stay: click and STAY on the targeted element!
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
                     window.set_visible(false);
@@ -1233,18 +1280,32 @@ function runOverlay() {
                         button: isShift ? 'right' : 'left',
                         normalized: { x: target.x, y: target.y },
                     });
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 260, () => {
-                        state.path = [];
-                        state.history = [];
-                        state.rect = { x: 0, y: 0, width: 1, height: 1 };
-                        state.point = null;
-                        state.snappedElement = null;
-                        state.snapCandidates = [];
-                        state.snapIndex = -1;
+
+                    state.lastClickTime = GLib.get_monotonic_time();
+
+                    // Invalidate stale element cache since the click may mutate/destroy UI elements
+                    _cachedElements = [];
+                    _cacheTimestamp = 0;
+                    state.snappedElement = null;
+                    state.snapCandidates = [];
+                    state.snapIndex = -1;
+
+                    // Re-present overlay immediately after click completes (~60ms),
+                    // KEEPING all state (coordinates, micro-cell, reticle lock) completely locked!
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 60, () => {
                         window.set_visible(true);
                         window.present();
                         drawingArea.grab_focus();
                         drawingArea.queue_draw();
+                        startRippleAnimation(drawingArea, state);
+
+                        const targetPid = detectActiveProcessPid();
+                        fetchElementsAsync({ pid: targetPid }, (elements) => {
+                            if (state.path.length >= MAX_DEPTH && state.point) {
+                                snapToNearestElement(state, window, drawingArea);
+                            }
+                        });
+
                         return GLib.SOURCE_REMOVE;
                     });
                     return true;
