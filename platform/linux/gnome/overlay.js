@@ -210,7 +210,8 @@ function cycleSnap(state, window, drawingArea, direction) {
 function drawLabel(area, context, label, x, y, options = {}) {
     const fontSize = options.fontSize || 22;
     const fontDesc = options.font || `Sans Bold ${fontSize}`;
-    const layout = area.create_pango_layout(label.toUpperCase());
+    const text = options.preserveCase ? label : label.toUpperCase();
+    const layout = area.create_pango_layout(text);
     const font = Pango.FontDescription.from_string(fontDesc);
     layout.set_font_description(font);
     const [textWidth, textHeight] = layout.get_pixel_size();
@@ -220,14 +221,35 @@ function drawLabel(area, context, label, x, y, options = {}) {
     const bg = options.bg || [0.97, 0.72, 0.18, 0.96];
     const fg = options.fg || [0.05, 0.06, 0.09, 1.0];
 
-    context.setSourceRGBA(bg[0], bg[1], bg[2], bg[3]);
-    context.rectangle(
-        x - textWidth / 2 - paddingX,
-        y - textHeight / 2 - paddingY,
-        textWidth + paddingX * 2,
-        textHeight + paddingY * 2,
-    );
-    context.fill();
+    const radius = options.radius !== undefined ? options.radius : 4;
+    if (radius > 0) {
+        // Rounded rectangle
+        const rx = x - textWidth / 2 - paddingX;
+        const ry = y - textHeight / 2 - paddingY;
+        const rw = textWidth + paddingX * 2;
+        const rh = textHeight + paddingY * 2;
+        context.setSourceRGBA(bg[0], bg[1], bg[2], bg[3]);
+        context.moveTo(rx + radius, ry);
+        context.lineTo(rx + rw - radius, ry);
+        context.arc(rx + rw - radius, ry + radius, radius, -Math.PI / 2, 0);
+        context.lineTo(rx + rw, ry + rh - radius);
+        context.arc(rx + rw - radius, ry + rh - radius, radius, 0, Math.PI / 2);
+        context.lineTo(rx + radius, ry + rh);
+        context.arc(rx + radius, ry + rh - radius, radius, Math.PI / 2, Math.PI);
+        context.lineTo(rx, ry + radius);
+        context.arc(rx + radius, ry + radius, radius, Math.PI, -Math.PI / 2);
+        context.closePath();
+        context.fill();
+    } else {
+        context.setSourceRGBA(bg[0], bg[1], bg[2], bg[3]);
+        context.rectangle(
+            x - textWidth / 2 - paddingX,
+            y - textHeight / 2 - paddingY,
+            textWidth + paddingX * 2,
+            textHeight + paddingY * 2,
+        );
+        context.fill();
+    }
 
     context.setSourceRGBA(fg[0], fg[1], fg[2], fg[3]);
     context.moveTo(x - textWidth / 2, y - textHeight / 2);
@@ -372,10 +394,11 @@ function drawOverlay(area, context, width, height, state) {
         context.fill();
 
         // Small badge at scroll anchor
-        drawLabel(area, context, 'SCROLL', reticleX, reticleY - 36, {
+        drawLabel(area, context, 'Scroll', reticleX, reticleY - 36, {
             fontSize: 11,
             paddingX: 8,
             paddingY: 3,
+            preserveCase: true,
             bg: [0.10, 0.15, 0.25, 0.95],
             fg: [0.30, 0.85, 1.0, 1.0],
         });
@@ -391,15 +414,15 @@ function drawOverlay(area, context, width, height, state) {
         context.fill();
 
         context.setSourceRGBA(0.18, 0.80, 0.97, 0.80);
-        context.setLineWidth(1.8);
+        context.setLineWidth(1.0);
         context.rectangle(barX, barY, barWidth, barHeight);
         context.stroke();
 
-        const hudText = '📜 SCROLL MODE  •  [j / s / ↓] Down  •  [k / w / ↑] Up  •  [d / u] Page  •  [Shift] Faster  •  [Tab] Grid  •  [Enter] Click  •  [Esc] Exit';
+        const hudText = 'Scroll  —  [j/k] Down/Up  [d/u] Page  [Shift] Faster  [Tab] Grid  [Enter] Click  [Esc] Exit';
         const hudLayout = area.create_pango_layout(hudText);
-        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 12'));
+        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans 12'));
         const [textW, textH] = hudLayout.get_pixel_size();
-        context.setSourceRGBA(0.95, 0.97, 1.0, 1.0);
+        context.setSourceRGBA(0.80, 0.88, 1.0, 0.90);
         context.moveTo(barX + (barWidth - textW) / 2, barY + (barHeight - textH) / 2);
         PangoCairo.show_layout(context, hudLayout);
         return;
@@ -460,15 +483,15 @@ function drawOverlay(area, context, width, height, state) {
         context.fill();
 
         context.setSourceRGBA(0.97, 0.72, 0.18, 0.85);
-        context.setLineWidth(1.8);
+        context.setLineWidth(1.0);
         context.rectangle(barX, barY, barWidth, barHeight);
         context.stroke();
 
-        const hudText = '📌 TOP BAR MODE  •  [a] Activities  •  [s] Clock  •  [d] Settings/WiFi  •  [c] Click & Stay  •  [Enter] Click  •  [Tab] Grid';
+        const hudText = 'Top Bar  —  [a] Activities  [s] Clock  [d] Settings  [c] Click & Stay  [Enter] Click  [Tab] Grid  [Esc] Exit';
         const hudLayout = area.create_pango_layout(hudText);
-        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 12'));
+        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans 12'));
         const [textW, textH] = hudLayout.get_pixel_size();
-        context.setSourceRGBA(0.95, 0.97, 1.0, 1.0);
+        context.setSourceRGBA(0.80, 0.88, 1.0, 0.90);
         context.moveTo(barX + (barWidth - textW) / 2, barY + (barHeight - textH) / 2);
         PangoCairo.show_layout(context, hudLayout);
         return;
@@ -489,10 +512,11 @@ function drawOverlay(area, context, width, height, state) {
         context.setSourceRGBA(1.0, 0.25, 0.25, 0.90);
         context.arc(startX, startY, 12, 0, 2 * Math.PI);
         context.fill();
-        drawLabel(area, context, 'DRAG SOURCE', startX, startY - 24, {
+        drawLabel(area, context, 'Drag source', startX, startY - 24, {
             fontSize: 10,
             paddingX: 6,
             paddingY: 2,
+            preserveCase: true,
             bg: [0.8, 0.1, 0.1, 0.95],
             fg: [1, 1, 1, 1],
         });
@@ -603,52 +627,76 @@ function drawOverlay(area, context, width, height, state) {
             const total = state.snapCandidates ? state.snapCandidates.length : 0;
             const idx = state.snapIndex >= 0 ? state.snapIndex + 1 : 1;
             const cycleHint = total > 1 ? ` [${idx}/${total}]` : '';
-            badgeText = `${state.path.join('').toUpperCase()} • ${name}${cycleHint}`;
+            badgeText = `${state.path.join('').toUpperCase()}  ${name}${cycleHint}`;
         } else {
             badgeText = state.path.join('').toUpperCase();
         }
 
-        drawLabel(area, context, badgeText, reticleX, reticleY - 32, {
-            fontSize: isSnapped ? 13 : 16,
-            paddingX: isSnapped ? 8 : 10,
+        drawLabel(area, context, badgeText, reticleX, reticleY - 36, {
+            fontSize: isSnapped ? 12 : 16,
+            paddingX: isSnapped ? 10 : 10,
             paddingY: 5,
-            bg: isSnapped ? [0.10, 0.82, 0.95, 0.96] : [0.97, 0.72, 0.18, 0.98],
-            fg: [0.05, 0.06, 0.09, 1.0],
+            preserveCase: true,
+            bg: isSnapped ? [0.08, 0.18, 0.28, 0.96] : [0.97, 0.72, 0.18, 0.98],
+            fg: isSnapped ? [0.18, 0.85, 0.98, 1.0] : [0.05, 0.06, 0.09, 1.0],
         });
     }
 
-    // Header breadcrumb
+    // Header breadcrumb — shown at top center with a background pill
     let breadcrumb;
     if (state.dragging) {
         if (isMacroView) {
-            breadcrumb = '🎯 DRAG ENGAGED  •  Stroke 1: Choose destination region  •  [Esc] Cancel drag';
+            breadcrumb = 'Drag  —  Stroke 1: choose destination  [Esc] Cancel';
         } else if (!isLocked) {
-            breadcrumb = `🎯 DRAG ENGAGED  •  Region ${state.path[0].toUpperCase()}  •  Stroke 2: Choose drop target  •  [Space] Drop here`;
+            breadcrumb = `Drag  ${state.path[0].toUpperCase()}  —  Stroke 2: choose drop target  [Space] Drop`;
         } else {
-            breadcrumb = `🎯 DROP TARGET LOCKED: ${state.path.join('').toUpperCase()}  •  [v / Space / Enter] DROP  •  [Esc] Cancel`;
+            breadcrumb = `Drop target: ${state.path.join('').toUpperCase()}  —  [v/Space/Enter] Drop  [Esc] Cancel`;
         }
     } else if (isMacroView) {
-        breadcrumb = '!mouse  •  Stroke 1: Choose region (A-L)  •  [t] Top Bar';
+        breadcrumb = '!mouse  —  Stroke 1: choose region  [t] Top Bar  [Esc] Exit';
     } else if (!isLocked) {
-        breadcrumb = `Region ${state.path[0].toUpperCase()}  •  Stroke 2: Choose target  •  Enter for region center  •  Backspace to undo`;
+        breadcrumb = `Region ${state.path[0].toUpperCase()}  —  Stroke 2: choose target  [Enter] Region center  [Backspace] Undo`;
     } else {
         if (state.snappedElement) {
             const role = state.snappedElement.role || 'element';
-            const name = state.snappedElement.name ? ` "${state.snappedElement.name.slice(0, 24)}"` : '';
+            const name = state.snappedElement.name ? `"${state.snappedElement.name.slice(0, 28)}"` : '';
             const total = state.snapCandidates ? state.snapCandidates.length : 0;
-            const tabHint = total > 1 ? `  •  [Tab] Cycle (${total} targets)` : '';
-            breadcrumb = `🧲 SNAP LOCKED: [${role}]${name}${tabHint}  •  [Enter/Space] Click  •  [c] Click & Stay  •  [h/j/k/l] Nudge`;
+            const tabHint = total > 1 ? `  [Tab] ${state.snapIndex + 1}/${total}` : '';
+            breadcrumb = `${role}${name ? '  ' + name : ''}${tabHint}  —  [Enter] Click  [c] Click & Stay  [h/j/k/l] Nudge  [Esc] Exit`;
         } else {
-            breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  s: Scroll Mode  •  v: Drag Mode  •  c: Click & Stay  •  r/d/m: Other Clicks`;
+            breadcrumb = `${state.path.join('').toUpperCase()}  —  [Enter] Click  [s] Scroll  [v] Drag  [c] Click & Stay  [r/d/m] Other  [Esc] Exit`;
         }
     }
 
-    const layout = area.create_pango_layout(`${breadcrumb}  •  Esc to cancel`);
-    layout.set_font_description(Pango.FontDescription.from_string('Sans 13'));
-    const [textWidth] = layout.get_pixel_size();
-    context.setSourceRGBA(0.96, 0.97, 1, 0.96);
-    context.moveTo((width - textWidth) / 2, 20);
-    PangoCairo.show_layout(context, layout);
+    // Pill background behind breadcrumb
+    const bcLayout = area.create_pango_layout(breadcrumb);
+    bcLayout.set_font_description(Pango.FontDescription.from_string('Sans 12'));
+    const [bcW, bcH] = bcLayout.get_pixel_size();
+    const bcPadX = 16;
+    const bcPadY = 6;
+    const bcX = (width - bcW) / 2;
+    const bcY = 16;
+    const bcRx = bcX - bcPadX;
+    const bcRy = bcY - bcPadY;
+    const bcRw = bcW + bcPadX * 2;
+    const bcRh = bcH + bcPadY * 2;
+    const bcR = 6;
+    context.setSourceRGBA(0.04, 0.05, 0.10, 0.82);
+    context.moveTo(bcRx + bcR, bcRy);
+    context.lineTo(bcRx + bcRw - bcR, bcRy);
+    context.arc(bcRx + bcRw - bcR, bcRy + bcR, bcR, -Math.PI / 2, 0);
+    context.lineTo(bcRx + bcRw, bcRy + bcRh - bcR);
+    context.arc(bcRx + bcRw - bcR, bcRy + bcRh - bcR, bcR, 0, Math.PI / 2);
+    context.lineTo(bcRx + bcR, bcRy + bcRh);
+    context.arc(bcRx + bcR, bcRy + bcRh - bcR, bcR, Math.PI / 2, Math.PI);
+    context.lineTo(bcRx, bcRy + bcR);
+    context.arc(bcRx + bcR, bcRy + bcR, bcR, Math.PI, -Math.PI / 2);
+    context.closePath();
+    context.fill();
+
+    context.setSourceRGBA(0.75, 0.82, 0.95, 0.85);
+    context.moveTo(bcX, bcY);
+    PangoCairo.show_layout(context, bcLayout);
 }
 
 function keyCharacter(keyval) {
