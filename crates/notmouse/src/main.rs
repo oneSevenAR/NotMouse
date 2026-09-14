@@ -136,6 +136,18 @@ fn print_help() {
     );
 }
 
+struct OverlayGuard(Option<std::process::Child>);
+
+impl Drop for OverlayGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_file(session::overlay_socket_path());
+    }
+}
+
 fn run_daemon() -> Result<(), String> {
     if session::try_connect().is_some() {
         return Err(format!(
@@ -153,10 +165,41 @@ fn run_daemon() -> Result<(), String> {
         "!mouse: resident daemon ready (listening on {})",
         path.display()
     );
+
+    // Pre-warm the warm overlay in the background so cold launch latency is eliminated!
+    let script = overlay_script();
+    let warm_overlay = if script.is_file() {
+        println!("!mouse: pre-warming resident overlay adapter...");
+        Command::new("gjs")
+            .arg(&script)
+            .arg("--background")
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .ok()
+    } else {
+        None
+    };
+
     println!("!mouse: compositor binding warm and permanent. Press Ctrl+C to terminate.");
 
+    let mut guard = OverlayGuard(warm_overlay);
     loop {
-        thread::sleep(Duration::from_secs(3600));
+        thread::sleep(Duration::from_secs(5));
+        if let Some(ref mut child) = guard.0
+            && let Ok(Some(_status)) = child.try_wait()
+            && script.is_file()
+        {
+            guard.0 = Command::new("gjs")
+                .arg(&script)
+                .arg("--background")
+                .stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .ok();
+        }
     }
 }
 
@@ -243,10 +286,27 @@ fn launch_overlay() -> Result<(), String> {
         ));
     }
 
+    let start_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros())
+        .unwrap_or(0);
+
+    // Ultra-fast path: if resident warm overlay socket is active, trigger unhide in <0.5ms!
+    let overlay_sock = session::overlay_socket_path();
+    if overlay_sock.exists()
+        && let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&overlay_sock)
+    {
+        let msg = format!("{{\"action\":\"show\",\"start_us\":{start_us}}}\n");
+        if stream.write_all(msg.as_bytes()).is_ok() && stream.flush().is_ok() {
+            return Ok(());
+        }
+    }
+
     if let Some(mut stream) = session::try_connect() {
         // Fast path: resident session active! Instant overlay launch with zero device churn!
         let mut child = Command::new("gjs")
             .arg(script)
+            .env("NOTMOUSE_START_US", start_us.to_string())
             .stdout(Stdio::piped())
             .spawn()
             .map_err(|error| format!("could not start the GNOME overlay adapter: {error}"))?;
