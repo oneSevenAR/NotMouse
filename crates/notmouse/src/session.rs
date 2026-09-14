@@ -17,6 +17,14 @@ pub fn socket_path() -> PathBuf {
         .join("notmouse.sock")
 }
 
+/// Returns the path to the Unix domain socket used for the resident warm overlay.
+#[must_use]
+pub fn overlay_socket_path() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("notmouse-overlay.sock")
+}
+
 /// Attempts to connect to an existing resident session daemon.
 ///
 /// If a stale socket file exists from an unclean shutdown, it is automatically removed.

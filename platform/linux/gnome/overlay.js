@@ -107,8 +107,8 @@ function fetchElementsAsync(options, callback) {
         GLib.io_add_watch(stdoutChannel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, (_ch, cond) => {
             if (cond & GLib.IOCondition.IN) {
                 const [status, str] = stdoutChannel.read_to_end();
-                if (status === GLib.IOStatus.NORMAL) {
-                    output += str;
+                if (status === GLib.IOStatus.NORMAL && str) {
+                    output += (typeof str === 'string') ? str : new TextDecoder('utf-8').decode(str);
                 }
             }
             if (cond & GLib.IOCondition.HUP) {
@@ -354,7 +354,38 @@ function drawReticle(context, x, y, isSnapped = false) {
     context.fill();
 }
 
+let _lastTriggerStartUs = null;
+
 function drawOverlay(area, context, width, height, state) {
+    if (_lastTriggerStartUs) {
+        const tNowUs = GLib.get_real_time();
+        const totalLatency = ((tNowUs - _lastTriggerStartUs) / 1000.0).toFixed(1);
+        _lastTriggerStartUs = null;
+        const logLine = `[LIVE MEASUREMENT] Overlay displayed in: ${totalLatency} ms\n`;
+        print(logLine.trim());
+        try {
+            const file = Gio.File.new_for_path('/tmp/notmouse_latency.log');
+            const outStream = file.append_to(Gio.FileCreateFlags.NONE, null);
+            outStream.write(logLine, null);
+            outStream.close(null);
+        } catch (_e) {}
+    } else if (!_firstFrameRendered) {
+        _firstFrameRendered = true;
+        const tNow = Date.now();
+        const startUsStr = GLib.getenv('NOTMOUSE_START_US');
+        const startMs = startUsStr ? (parseInt(startUsStr, 10) / 1000) : _t0_script_start;
+        const totalLatency = (tNow - startMs).toFixed(1);
+        const scriptLatency = (tNow - _t0_script_start).toFixed(1);
+        const logLine = `[LIVE MEASUREMENT] Overlay displayed in: ${totalLatency} ms (GJS internal: ${scriptLatency} ms)\n`;
+        print(logLine.trim());
+        try {
+            const file = Gio.File.new_for_path('/tmp/notmouse_latency.log');
+            const outStream = file.append_to(Gio.FileCreateFlags.NONE, null);
+            outStream.write(logLine, null);
+            outStream.close(null);
+        } catch (_e) {}
+    }
+
     if (state.mode === 'scroll') {
         // Minimal background tint so underlying content is 100% legible
         context.setSourceRGBA(0.01, 0.02, 0.04, 0.04);
@@ -743,14 +774,175 @@ function getScreenCoordinates(state, window) {
     };
 }
 
+let _isResident = false;
+let _daemonStream = null;
+
+function sendEvent(eventObj) {
+    const line = JSON.stringify(eventObj) + '\n';
+    if (!_daemonStream) {
+        try {
+            const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR') || '/tmp';
+            const sockPath = `${runtimeDir}/notmouse.sock`;
+            const sockFile = Gio.File.new_for_path(sockPath);
+            if (sockFile.query_exists(null)) {
+                const client = new Gio.SocketClient();
+                const addr = Gio.UnixSocketAddress.new(sockPath);
+                const conn = client.connect(addr, null);
+                _daemonStream = conn.get_output_stream();
+            }
+        } catch (_e) {
+            _daemonStream = null;
+        }
+    }
+    if (_daemonStream) {
+        try {
+            _daemonStream.write(line, null);
+            _daemonStream.flush(null);
+            return;
+        } catch (_e) {
+            _daemonStream = null;
+        }
+    }
+    print(line.trim());
+}
+
+function dismissOverlay(window, application) {
+    if (_isResident) {
+        window.set_visible(false);
+    } else {
+        application.quit();
+    }
+}
+
 function emitSelection(state, action, window) {
     const target = getScreenCoordinates(state, window);
-    print(JSON.stringify({
+    sendEvent({
         event: 'selected',
         strokes: state.path.join(''),
         action,
         normalized: { x: target.x, y: target.y },
-    }));
+    });
+}
+
+function resetOverlayState(state) {
+    state.mode = 'grid';
+    state.path = [];
+    state.rect = { x: 0, y: 0, width: 1, height: 1 };
+    state.history = [];
+    state.point = null;
+    state.scrollSpeed = 5;
+    state.lastScrollDir = null;
+    state.dragging = false;
+    state.dragStartPoint = null;
+    state.snappedElement = null;
+    state.nearbyElements = [];
+    state.snapCandidates = [];
+    state.snapIndex = -1;
+    state.topBarTarget = null;
+}
+
+function showOverlay(state, window, drawingArea, startUs = null) {
+    _lastTriggerStartUs = startUs || GLib.get_real_time();
+    resetOverlayState(state);
+
+    const display = Gdk.Display.get_default();
+    if (display) {
+        const monitors = display.get_monitors();
+        if (monitors.get_n_items() > 0) {
+            const monitor = monitors.get_item(0);
+            const geometry = monitor.get_geometry();
+            window.set_default_size(geometry.width, geometry.height);
+        }
+    }
+    window.maximize();
+
+    // Instantly snapshot active window PID (<50ms) BEFORE presenting overlay
+    const targetPid = detectActiveProcessPid();
+    window.set_visible(true);
+    window.present();
+    drawingArea.grab_focus();
+    drawingArea.queue_draw();
+
+    if (startUs) {
+        const nowUs = GLib.get_real_time();
+        const deltaMs = (nowUs - startUs) / 1000.0;
+        try {
+            const logLine = `[WARM_LATENCY] from trigger to window.present(): ${deltaMs.toFixed(2)} ms (start: ${startUs}, present: ${nowUs})\n`;
+            const file = Gio.File.new_for_path('/tmp/notmouse_latency.log');
+            const stream = file.append_to(Gio.FileCreateFlags.NONE, null);
+            stream.write(logLine, null);
+            stream.close(null);
+        } catch (_e) {}
+    }
+
+    // Scan the focused window asynchronously in the background with zero UI freeze
+    fetchElementsAsync({ pid: targetPid }, (elements) => {
+        if (elements && elements.length > 0) {
+            if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
+                snapToNearestElement(state, window, drawingArea);
+            }
+        }
+    });
+}
+
+function setupOverlaySocket(state, window, drawingArea, application) {
+    const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR') || GLib.get_tmp_dir();
+    const sockPath = `${runtimeDir}/notmouse-overlay.sock`;
+    const sockFile = Gio.File.new_for_path(sockPath);
+
+    try {
+        sockFile.delete(null);
+    } catch (_e) {}
+
+    const listener = new Gio.SocketListener();
+    const addr = Gio.UnixSocketAddress.new(sockPath);
+    try {
+        listener.add_address(addr, Gio.SocketType.STREAM, Gio.SocketProtocol.DEFAULT, null);
+    } catch (e) {
+        printerr(`!mouse: could not bind overlay socket at ${sockPath}: ${e}`);
+        return;
+    }
+
+    function acceptConnection() {
+        listener.accept_async(null, (source, res) => {
+            try {
+                const [conn] = source.accept_finish(res);
+                const dis = new Gio.DataInputStream({
+                    base_stream: conn.get_input_stream(),
+                });
+                readCommand(dis);
+            } catch (_e) {
+                return;
+            }
+            acceptConnection();
+        });
+    }
+
+    function readCommand(dis) {
+        dis.read_line_async(GLib.PRIORITY_DEFAULT, null, (stream, res) => {
+            try {
+                const [line] = stream.read_line_finish_utf8(res);
+                if (line) {
+                    const data = JSON.parse(line);
+                    if (data.action === 'show') {
+                        showOverlay(state, window, drawingArea, data.start_us || null);
+                    } else if (data.action === 'hide') {
+                        dismissOverlay(window, application);
+                    } else if (data.action === 'quit') {
+                        application.quit();
+                    }
+                }
+            } catch (_e) {}
+        });
+    }
+
+    acceptConnection();
+
+    application.connect('shutdown', () => {
+        try {
+            sockFile.delete(null);
+        } catch (_e) {}
+    });
 }
 
 function runOverlay() {
@@ -824,7 +1016,7 @@ function runOverlay() {
             // Handle Top Bar Mode
             if (state.mode === 'topbar') {
                 if (keyval === Gdk.KEY_Escape || char === 'q') {
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
                 if (keyval === Gdk.KEY_Tab || keyval === Gdk.KEY_BackSpace) {
@@ -836,22 +1028,22 @@ function runOverlay() {
                 }
                 if (keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || keyval === Gdk.KEY_space) {
                     emitSelection(state, isShift ? 'right-click' : 'click', window);
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
                 if (char === 'r') {
                     emitSelection(state, 'right-click', window);
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
                     window.set_visible(false);
-                    print(JSON.stringify({
+                    sendEvent({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
                         normalized: { x: target.x, y: target.y },
-                    }));
+                    });
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 260, () => {
                         state.mode = 'grid';
                         state.path = [];
@@ -873,7 +1065,7 @@ function runOverlay() {
                 if (char === 'a') {
                     if (state.topBarTarget === 'a') {
                         emitSelection(state, isShift ? 'right-click' : 'click', window);
-                        application.quit();
+                        dismissOverlay(window, application);
                         return true;
                     }
                     state.topBarTarget = 'a';
@@ -884,7 +1076,7 @@ function runOverlay() {
                 if (char === 's') {
                     if (state.topBarTarget === 's') {
                         emitSelection(state, isShift ? 'right-click' : 'click', window);
-                        application.quit();
+                        dismissOverlay(window, application);
                         return true;
                     }
                     state.topBarTarget = 's';
@@ -895,7 +1087,7 @@ function runOverlay() {
                 if (char === 'd') {
                     if (state.topBarTarget === 'd') {
                         emitSelection(state, isShift ? 'right-click' : 'click', window);
-                        application.quit();
+                        dismissOverlay(window, application);
                         return true;
                     }
                     state.topBarTarget = 'd';
@@ -927,18 +1119,18 @@ function runOverlay() {
                 const mult = isShift ? 3 : 1;
 
                 if (keyval === Gdk.KEY_Escape || char === 'q') {
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
 
                 if (keyval === Gdk.KEY_space || keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter) {
                     const target = getScreenCoordinates(state, window);
-                    print(JSON.stringify({
+                    sendEvent({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
                         normalized: { x: target.x, y: target.y },
-                    }));
-                    application.quit();
+                    });
+                    dismissOverlay(window, application);
                     return true;
                 }
 
@@ -954,42 +1146,42 @@ function runOverlay() {
 
                 if (char === 'j' || char === 's' || keyval === Gdk.KEY_Down) {
                     state.lastScrollDir = 'down';
-                    print(JSON.stringify({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * mult }));
+                    sendEvent({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * mult });
                     drawingArea.queue_draw();
                     return true;
                 }
 
                 if (char === 'k' || char === 'w' || keyval === Gdk.KEY_Up) {
                     state.lastScrollDir = 'up';
-                    print(JSON.stringify({ event: 'scroll', dx: 0, dy: state.scrollSpeed * mult }));
+                    sendEvent({ event: 'scroll', dx: 0, dy: state.scrollSpeed * mult });
                     drawingArea.queue_draw();
                     return true;
                 }
 
                 if (char === 'd' || keyval === Gdk.KEY_Page_Down) {
                     state.lastScrollDir = 'down';
-                    print(JSON.stringify({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * 3 * mult }));
+                    sendEvent({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * 3 * mult });
                     drawingArea.queue_draw();
                     return true;
                 }
 
                 if (char === 'u' || keyval === Gdk.KEY_Page_Up) {
                     state.lastScrollDir = 'up';
-                    print(JSON.stringify({ event: 'scroll', dx: 0, dy: state.scrollSpeed * 3 * mult }));
+                    sendEvent({ event: 'scroll', dx: 0, dy: state.scrollSpeed * 3 * mult });
                     drawingArea.queue_draw();
                     return true;
                 }
 
                 if (char === 'h' || keyval === Gdk.KEY_Left) {
                     state.lastScrollDir = 'left';
-                    print(JSON.stringify({ event: 'scroll', dx: -state.scrollSpeed * mult, dy: 0 }));
+                    sendEvent({ event: 'scroll', dx: -state.scrollSpeed * mult, dy: 0 });
                     drawingArea.queue_draw();
                     return true;
                 }
 
                 if (char === 'l' || keyval === Gdk.KEY_Right) {
                     state.lastScrollDir = 'right';
-                    print(JSON.stringify({ event: 'scroll', dx: state.scrollSpeed * mult, dy: 0 }));
+                    sendEvent({ event: 'scroll', dx: state.scrollSpeed * mult, dy: 0 });
                     drawingArea.queue_draw();
                     return true;
                 }
@@ -1000,10 +1192,10 @@ function runOverlay() {
             // Handle Grid Mode
             if (keyval === Gdk.KEY_Escape) {
                 if (state.dragging) {
-                    print(JSON.stringify({ event: 'release', button: 'left' }));
+                    sendEvent({ event: 'release', button: 'left' });
                 }
-                print(JSON.stringify({ event: 'cancelled' }));
-                application.quit();
+                sendEvent({ event: 'cancelled' });
+                dismissOverlay(window, application);
                 return true;
             }
 
@@ -1026,14 +1218,14 @@ function runOverlay() {
                 if (keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || keyval === Gdk.KEY_space) {
                     if (state.dragging) {
                         const dropTarget = getScreenCoordinates(state, window);
-                        print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
-                        print(JSON.stringify({ event: 'release', button: 'left' }));
+                        sendEvent({ event: 'move', x: dropTarget.x, y: dropTarget.y });
+                        sendEvent({ event: 'release', button: 'left' });
                         state.dragging = false;
-                        application.quit();
+                        dismissOverlay(window, application);
                         return true;
                     }
                     emitSelection(state, isShift ? 'right-click' : 'click', window);
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
 
@@ -1041,11 +1233,11 @@ function runOverlay() {
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
                     window.set_visible(false);
-                    print(JSON.stringify({
+                    sendEvent({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
                         normalized: { x: target.x, y: target.y },
-                    }));
+                    });
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 260, () => {
                         state.path = [];
                         state.history = [];
@@ -1065,17 +1257,17 @@ function runOverlay() {
 
                 if (char === 'r') {
                     emitSelection(state, 'right-click', window);
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
                 if (char === 'd') {
                     emitSelection(state, 'double-click', window);
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
                 if (char === 'm') {
                     emitSelection(state, 'middle-click', window);
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
 
@@ -1095,8 +1287,8 @@ function runOverlay() {
                         state.dragging = true;
                         const target = getScreenCoordinates(state, window);
                         state.dragStartPoint = target;
-                        print(JSON.stringify({ event: 'move', x: target.x, y: target.y }));
-                        print(JSON.stringify({ event: 'press', button: 'left' }));
+                        sendEvent({ event: 'move', x: target.x, y: target.y });
+                        sendEvent({ event: 'press', button: 'left' });
 
                         state.path = [];
                         state.history = [];
@@ -1106,10 +1298,10 @@ function runOverlay() {
                         return true;
                     } else {
                         const dropTarget = getScreenCoordinates(state, window);
-                        print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
-                        print(JSON.stringify({ event: 'release', button: 'left' }));
+                        sendEvent({ event: 'move', x: dropTarget.x, y: dropTarget.y });
+                        sendEvent({ event: 'release', button: 'left' });
                         state.dragging = false;
-                        application.quit();
+                        dismissOverlay(window, application);
                         return true;
                     }
                 }
@@ -1131,8 +1323,8 @@ function runOverlay() {
                     // so Mutter transfers pointer focus to the underlying window, followed by initial scroll!
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
                         if (state.mode === 'scroll') {
-                            print(JSON.stringify({ event: 'move', x: target.x, y: target.y }));
-                            print(JSON.stringify({ event: 'scroll', dx: 0, dy: isUp ? 5 : -5 }));
+                            sendEvent({ event: 'move', x: target.x, y: target.y });
+                            sendEvent({ event: 'scroll', dx: 0, dy: isUp ? 5 : -5 });
                         }
                         return GLib.SOURCE_REMOVE;
                     });
@@ -1184,14 +1376,14 @@ function runOverlay() {
             if (state.path.length === 1 && (keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter || keyval === Gdk.KEY_space)) {
                 if (state.dragging) {
                     const dropTarget = getScreenCoordinates(state, window);
-                    print(JSON.stringify({ event: 'move', x: dropTarget.x, y: dropTarget.y }));
-                    print(JSON.stringify({ event: 'release', button: 'left' }));
+                    sendEvent({ event: 'move', x: dropTarget.x, y: dropTarget.y });
+                    sendEvent({ event: 'release', button: 'left' });
                     state.dragging = false;
-                    application.quit();
+                    dismissOverlay(window, application);
                     return true;
                 }
                 emitSelection(state, isShift ? 'right-click' : 'click', window);
-                application.quit();
+                dismissOverlay(window, application);
                 return true;
             }
 
@@ -1236,31 +1428,31 @@ function runOverlay() {
             drawingArea.queue_draw();
             return true;
         });
+
         window.add_controller(keyboard);
         window.set_child(drawingArea);
-        const display = Gdk.Display.get_default();
-        const monitors = display.get_monitors();
-        if (monitors.get_n_items() > 0) {
-            const monitor = monitors.get_item(0);
-            const geometry = monitor.get_geometry();
-            window.set_default_size(geometry.width, geometry.height);
+
+        const isBackground = ARGV.includes('--background') || ARGV.includes('--daemon');
+        _isResident = isBackground || ARGV.includes('--resident') || GLib.getenv('NOTMOUSE_RESIDENT') === '1';
+
+        if (_isResident) {
+            setupOverlaySocket(state, window, drawingArea, application);
         }
-        window.maximize();
 
-        // Instantly snapshot active window PID (<50ms) BEFORE presenting overlay
-        const targetPid = detectActiveProcessPid();
-        window.present();
-        drawingArea.grab_focus();
-
-        // Scan the focused window asynchronously in the background with zero UI freeze
-        fetchElementsAsync({ pid: targetPid }, (elements) => {
-            if (elements && elements.length > 0) {
-                if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
-                    snapToNearestElement(state, window, drawingArea);
-                }
-            }
-        });
-
+        if (isBackground) {
+            // Pre-warm Wayland surface & GTK pipeline invisibly
+            window.set_opacity(0);
+            window.present();
+            GLib.idle_add(GLib.PRIORITY_HIGH, () => {
+                window.set_visible(false);
+                window.set_opacity(1);
+                return GLib.SOURCE_REMOVE;
+            });
+        } else {
+            const startEnv = GLib.getenv('NOTMOUSE_START_US');
+            const startUs = startEnv ? parseInt(startEnv, 10) : null;
+            showOverlay(state, window, drawingArea, startUs);
+        }
 
         if (GLib.getenv('NOTMOUSE_SMOKE_TEST') === '1') {
             GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
