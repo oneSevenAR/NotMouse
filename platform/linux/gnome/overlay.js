@@ -151,29 +151,59 @@ function snapToNearestElement(state, window, drawingArea) {
         return;
     }
 
-    // Snap radius: 110 pixels in window coordinate space
+    // Snap radius: 110 pixels for auto-snap; cycling searches wider 300px radius
     const SNAP_RADIUS_PX = 110;
-    let bestElem = null;
-    let bestDistSq = SNAP_RADIUS_PX * SNAP_RADIUS_PX;
+    const CYCLE_RADIUS_PX = 300;
 
-    for (const elem of candidates) {
+    // Build sorted candidates list for cycling (all within CYCLE_RADIUS_PX)
+    const withDist = candidates.map(elem => {
         const dx = elem.cx - targetPxX;
         const dy = elem.cy - targetPxY;
-        const distSq = dx * dx + dy * dy;
-        if (distSq < bestDistSq) {
-            bestDistSq = distSq;
-            bestElem = elem;
-        }
-    }
+        return { elem, distSq: dx * dx + dy * dy };
+    }).filter(e => e.distSq <= CYCLE_RADIUS_PX * CYCLE_RADIUS_PX);
+    withDist.sort((a, b) => a.distSq - b.distSq);
+    state.snapCandidates = withDist.map(e => e.elem);
 
-    if (bestElem) {
-        state.snappedElement = bestElem;
+    // Auto-snap to nearest within SNAP_RADIUS_PX
+    const bestWithDist = withDist.length > 0 && withDist[0].distSq <= SNAP_RADIUS_PX * SNAP_RADIUS_PX
+        ? withDist[0]
+        : null;
+
+    if (bestWithDist) {
+        state.snapIndex = 0;
+        state.snappedElement = bestWithDist.elem;
         // Magnetically shift normalized point directly onto center of the UI control!
-        state.point.x = bestElem.cx / winW;
-        state.point.y = bestElem.cy / winH;
+        state.point.x = bestWithDist.elem.cx / winW;
+        state.point.y = bestWithDist.elem.cy / winH;
         if (drawingArea) {
             drawingArea.queue_draw();
         }
+    }
+}
+
+// Cycle to the next/previous snappable element in state.snapCandidates.
+// direction: +1 for forward (Tab), -1 for backward (Shift+Tab)
+function cycleSnap(state, window, drawingArea, direction) {
+    if (!state.snapCandidates || state.snapCandidates.length === 0) {
+        return;
+    }
+    const winW = window.get_width() || 2560;
+    const winH = window.get_height() || 1411;
+
+    const n = state.snapCandidates.length;
+    // If nothing snapped yet, start at 0; otherwise advance
+    const next = state.snapIndex < 0
+        ? 0
+        : ((state.snapIndex + direction) % n + n) % n;
+
+    state.snapIndex = next;
+    state.snappedElement = state.snapCandidates[next];
+    state.point = {
+        x: state.snappedElement.cx / winW,
+        y: state.snappedElement.cy / winH,
+    };
+    if (drawingArea) {
+        drawingArea.queue_draw();
     }
 }
 
@@ -566,10 +596,17 @@ function drawOverlay(area, context, width, height, state) {
         const isSnapped = Boolean(state.snappedElement);
         drawReticle(context, reticleX, reticleY, isSnapped);
 
-        // Label above reticle (shows chord or snapped element name)
-        const badgeText = isSnapped && state.snappedElement.name
-            ? `${state.path.join('').toUpperCase()} • ${state.snappedElement.name.slice(0, 18)}`
-            : state.path.join('').toUpperCase();
+        // Label above reticle (shows chord + snapped element name + cycle position)
+        let badgeText;
+        if (isSnapped && state.snappedElement.name) {
+            const name = state.snappedElement.name.slice(0, 18);
+            const total = state.snapCandidates ? state.snapCandidates.length : 0;
+            const idx = state.snapIndex >= 0 ? state.snapIndex + 1 : 1;
+            const cycleHint = total > 1 ? ` [${idx}/${total}]` : '';
+            badgeText = `${state.path.join('').toUpperCase()} • ${name}${cycleHint}`;
+        } else {
+            badgeText = state.path.join('').toUpperCase();
+        }
 
         drawLabel(area, context, badgeText, reticleX, reticleY - 32, {
             fontSize: isSnapped ? 13 : 16,
@@ -598,7 +635,9 @@ function drawOverlay(area, context, width, height, state) {
         if (state.snappedElement) {
             const role = state.snappedElement.role || 'element';
             const name = state.snappedElement.name ? ` "${state.snappedElement.name.slice(0, 24)}"` : '';
-            breadcrumb = `🧲 SNAP LOCKED: [${role}]${name}  •  [Enter/Space] Click  •  [c] Click & Stay  •  [h/j/k/l] Nudge`;
+            const total = state.snapCandidates ? state.snapCandidates.length : 0;
+            const tabHint = total > 1 ? `  •  [Tab] Cycle (${total} targets)` : '';
+            breadcrumb = `🧲 SNAP LOCKED: [${role}]${name}${tabHint}  •  [Enter/Space] Click  •  [c] Click & Stay  •  [h/j/k/l] Nudge`;
         } else {
             breadcrumb = `Target: ${state.path.join('').toUpperCase()}  •  Space/Enter: Click  •  s: Scroll Mode  •  v: Drag Mode  •  c: Click & Stay  •  r/d/m: Other Clicks`;
         }
@@ -677,6 +716,8 @@ function runOverlay() {
             dragStartPoint: null,
             snappedElement: null,
             nearbyElements: [],
+            snapCandidates: [],  // all elements within cycling radius, sorted by distance
+            snapIndex: -1,       // index into snapCandidates of current snap target
         };
         const window = new Gtk.ApplicationWindow({
             application,
@@ -762,6 +803,9 @@ function runOverlay() {
                         state.rect = { x: 0, y: 0, width: 1, height: 1 };
                         state.point = null;
                         state.topBarTarget = null;
+                        state.snappedElement = null;
+                        state.snapCandidates = [];
+                        state.snapIndex = -1;
                         window.set_visible(true);
                         window.present();
                         drawingArea.grab_focus();
@@ -951,6 +995,9 @@ function runOverlay() {
                         state.history = [];
                         state.rect = { x: 0, y: 0, width: 1, height: 1 };
                         state.point = null;
+                        state.snappedElement = null;
+                        state.snapCandidates = [];
+                        state.snapIndex = -1;
                         window.set_visible(true);
                         window.present();
                         drawingArea.grab_focus();
@@ -973,6 +1020,16 @@ function runOverlay() {
                 if (char === 'm') {
                     emitSelection(state, 'middle-click', window);
                     application.quit();
+                    return true;
+                }
+
+                // Tab / Shift+Tab: cycle through snappable elements near current point
+                if (keyval === Gdk.KEY_Tab || keyval === Gdk.KEY_ISO_Left_Tab) {
+                    // If no candidates yet, build them from current point
+                    if (state.snapCandidates.length === 0) {
+                        snapToNearestElement(state, window, drawingArea);
+                    }
+                    cycleSnap(state, window, drawingArea, isShift ? -1 : 1);
                     return true;
                 }
 
@@ -1105,6 +1162,8 @@ function runOverlay() {
             if (state.path.length === 1) {
                 state.snappedElement = null;
                 state.nearbyElements = [];
+                state.snapCandidates = [];
+                state.snapIndex = -1;
                 const winW = window.get_width() || 2560;
                 const winH = window.get_height() || 1411;
                 const bounds = {
@@ -1130,6 +1189,8 @@ function runOverlay() {
                 const centerNormY = state.rect.y + state.rect.height / 2;
                 state.point = { x: centerNormX, y: centerNormY };
                 state.snappedElement = null;
+                state.snapCandidates = [];
+                state.snapIndex = -1;
 
                 snapToNearestElement(state, window, drawingArea);
             }
