@@ -369,21 +369,6 @@ function drawOverlay(area, context, width, height, state) {
             outStream.write(logLine, null);
             outStream.close(null);
         } catch (_e) {}
-    } else if (!_firstFrameRendered) {
-        _firstFrameRendered = true;
-        const tNow = Date.now();
-        const startUsStr = GLib.getenv('NOTMOUSE_START_US');
-        const startMs = startUsStr ? (parseInt(startUsStr, 10) / 1000) : _t0_script_start;
-        const totalLatency = (tNow - startMs).toFixed(1);
-        const scriptLatency = (tNow - _t0_script_start).toFixed(1);
-        const logLine = `[LIVE MEASUREMENT] Overlay displayed in: ${totalLatency} ms (GJS internal: ${scriptLatency} ms)\n`;
-        print(logLine.trim());
-        try {
-            const file = Gio.File.new_for_path('/tmp/notmouse_latency.log');
-            const outStream = file.append_to(Gio.FileCreateFlags.NONE, null);
-            outStream.write(logLine, null);
-            outStream.close(null);
-        } catch (_e) {}
     }
 
     if (state.mode === 'scroll') {
