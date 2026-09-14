@@ -28,7 +28,7 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None):
     ACTIONABLE = {
         'push button', 'toggle button', 'check box', 'radio button',
         'page tab', 'menu item', 'check menu item', 'radio menu item',
-        'entry', 'password text', 'combo box', 'link', 'button', 'menu',
+        'entry', 'password text', 'combo box', 'button',
     }
 
     # Collect top-level frames that have ACTIVE state (= focused window).
@@ -77,7 +77,19 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None):
             except Exception:
                 continue
 
-    def walk(node, depth=0):
+    # Get frame dimensions so we can discard off-screen elements.
+    # Use SCREEN coords so we know actual pixel size.
+    frame_bounds = {}  # frame id → (w, h)
+    for frame in active_frames:
+        try:
+            comp = frame.get_component_iface()
+            if comp:
+                b = comp.get_extents(Atspi.CoordType.SCREEN)
+                frame_bounds[id(frame)] = (b.width, b.height)
+        except Exception:
+            pass
+
+    def walk(node, depth=0, frame_w=99999, frame_h=99999):
         if depth > 25:
             return
         try:
@@ -85,7 +97,7 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None):
             if comp:
                 b = comp.get_extents(Atspi.CoordType.WINDOW)
                 if b.width > 0 and b.height > 0:
-                    # Spatial bounding filter: prune subtrees completely outside
+                    # Prune subtrees outside the requested scan region
                     if min_x is not None and b.x + b.width < min_x:
                         return
                     if max_x is not None and b.x > max_x:
@@ -95,29 +107,60 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None):
                     if max_y is not None and b.y > max_y:
                         return
 
+                    # Prune subtrees completely outside the window's visible area
+                    if b.x >= frame_w or b.y >= frame_h:
+                        return
+                    if b.x + b.width <= 0 or b.y + b.height <= 0:
+                        return
+
                     role = node.get_role_name()
                     if role in ACTIONABLE and b.width >= 10 and b.height >= 10:
-                        cx = b.x + b.width / 2.0
-                        cy = b.y + b.height / 2.0
-                        elements.append({
-                            'name': node.get_name(),
-                            'role': role,
-                            'x': b.x,
-                            'y': b.y,
-                            'w': b.width,
-                            'h': b.height,
-                            'cx': cx,
-                            'cy': cy,
-                        })
+                        # Must be SHOWING — element and all ancestors are actually rendered
+                        ss = node.get_state_set()
+                        if ss and ss.contains(Atspi.StateType.SHOWING):
+                            cx = b.x + b.width / 2.0
+                            cy = b.y + b.height / 2.0
+                            # Center must fall inside the visible frame and requested bounds
+                            if 0 <= cx < frame_w and 0 <= cy < frame_h:
+                                if min_x is not None and not (min_x <= cx <= max_x):
+                                    pass
+                                elif min_y is not None and not (min_y <= cy <= max_y):
+                                    pass
+                                else:
+                                    elements.append({
+                                        'name': node.get_name(),
+                                        'role': role,
+                                        'x': b.x,
+                                        'y': b.y,
+                                        'w': b.width,
+                                        'h': b.height,
+                                        'cx': cx,
+                                        'cy': cy,
+                                    })
 
             c_count = node.get_child_count()
             for c in range(c_count):
-                walk(node.get_child_at_index(c), depth + 1)
+                walk(node.get_child_at_index(c), depth + 1, frame_w, frame_h)
         except Exception:
             pass
 
     for frame in active_frames:
-        walk(frame)
+        fw, fh = frame_bounds.get(id(frame), (99999, 99999))
+        walk(frame, frame_w=fw, frame_h=fh)
+
+    # Spatial deduplication: if two elements have centers within 6px of each other
+    # (e.g. AT-SPI reporting nested button/panel or label wrappers at the same spot),
+    # keep only one.
+    deduped = []
+    for e in elements:
+        duplicate = False
+        for kept in deduped:
+            if abs(e['cx'] - kept['cx']) <= 6 and abs(e['cy'] - kept['cy']) <= 6:
+                duplicate = True
+                break
+        if not duplicate:
+            deduped.append(e)
+    elements = deduped
 
     return elements
 

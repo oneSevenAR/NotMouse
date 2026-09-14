@@ -142,42 +142,50 @@ function snapToNearestElement(state, window, drawingArea) {
     const targetPxX = state.point.x * winW;
     const targetPxY = state.point.y * winH;
 
-    // Search nearby elements (or cached elements) within snap radius
-    const candidates = (state.nearbyElements && state.nearbyElements.length > 0)
-        ? state.nearbyElements
-        : _cachedElements;
+    const source = (_cachedElements && _cachedElements.length > 0)
+        ? _cachedElements
+        : (state.nearbyElements || []);
 
-    if (!candidates || candidates.length === 0) {
+    if (!source || source.length === 0) {
         return;
     }
 
-    // Snap radius: 110 pixels for auto-snap; cycling searches wider 300px radius
-    const SNAP_RADIUS_PX = 110;
-    const CYCLE_RADIUS_PX = 300;
+    // Strictly confine candidates to the selected micro cell (+ 20px padding for edge buttons)
+    const pad = 20;
+    const cellMinX = state.rect.x * winW - pad;
+    const cellMaxX = (state.rect.x + state.rect.width) * winW + pad;
+    const cellMinY = state.rect.y * winH - pad;
+    const cellMaxY = (state.rect.y + state.rect.height) * winH + pad;
 
-    // Build sorted candidates list for cycling (all within CYCLE_RADIUS_PX)
-    const withDist = candidates.map(elem => {
+    const inCell = source.filter(e =>
+        e.cx >= cellMinX && e.cx <= cellMaxX &&
+        e.cy >= cellMinY && e.cy <= cellMaxY
+    );
+
+    if (inCell.length === 0) {
+        state.snapCandidates = [];
+        state.snapIndex = -1;
+        state.snappedElement = null;
+        return;
+    }
+
+    // Build sorted candidates list for cycling within this cell
+    const withDist = inCell.map(elem => {
         const dx = elem.cx - targetPxX;
         const dy = elem.cy - targetPxY;
         return { elem, distSq: dx * dx + dy * dy };
-    }).filter(e => e.distSq <= CYCLE_RADIUS_PX * CYCLE_RADIUS_PX);
+    });
     withDist.sort((a, b) => a.distSq - b.distSq);
     state.snapCandidates = withDist.map(e => e.elem);
 
-    // Auto-snap to nearest within SNAP_RADIUS_PX
-    const bestWithDist = withDist.length > 0 && withDist[0].distSq <= SNAP_RADIUS_PX * SNAP_RADIUS_PX
-        ? withDist[0]
-        : null;
+    // Auto-snap to nearest element in this cell
+    state.snapIndex = 0;
+    state.snappedElement = withDist[0].elem;
+    state.point.x = withDist[0].elem.cx / winW;
+    state.point.y = withDist[0].elem.cy / winH;
 
-    if (bestWithDist) {
-        state.snapIndex = 0;
-        state.snappedElement = bestWithDist.elem;
-        // Magnetically shift normalized point directly onto center of the UI control!
-        state.point.x = bestWithDist.elem.cx / winW;
-        state.point.y = bestWithDist.elem.cy / winH;
-        if (drawingArea) {
-            drawingArea.queue_draw();
-        }
+    if (drawingArea) {
+        drawingArea.queue_draw();
     }
 }
 
@@ -1206,29 +1214,22 @@ function runOverlay() {
             state.rect = childRect(state.rect, index);
             state.path.push(HINTS[index]);
 
-            // If Stroke 1 was just entered, asynchronously fetch elements inside the focused macro region
+            // If Stroke 1 was just entered, reset snap state
             if (state.path.length === 1) {
                 state.snappedElement = null;
-                state.nearbyElements = [];
                 state.snapCandidates = [];
                 state.snapIndex = -1;
-                const winW = window.get_width() || 2560;
-                const winH = window.get_height() || 1411;
-                const bounds = {
-                    minX: state.rect.x * winW - 20,
-                    maxX: (state.rect.x + state.rect.width) * winW + 20,
-                    minY: state.rect.y * winH - 20,
-                    maxY: (state.rect.y + state.rect.height) * winH + 20,
-                };
-                fetchElementsAsync(bounds, (elements) => {
-                    if (state.path.length >= 1) {
-                        state.nearbyElements = elements;
-                        // If already locked on stroke 2, attempt immediate magnetic snap!
-                        if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
-                            snapToNearestElement(state, window, drawingArea);
+                // Fallback only if cache was somehow missed at startup
+                if (!_cachedElements || _cachedElements.length === 0) {
+                    fetchElementsAsync(null, (elements) => {
+                        if (elements && elements.length > 0) {
+                            _cachedElements = elements;
+                            if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
+                                snapToNearestElement(state, window, drawingArea);
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
 
             // If 2nd stroke was just entered, initialize target lock point and attempt magnetic snap!
