@@ -1,9 +1,10 @@
+imports.gi.versions.Atspi = '2.0';
 imports.gi.versions.Gdk = '4.0';
 imports.gi.versions.Gtk = '4.0';
 imports.gi.versions.Pango = '1.0';
 imports.gi.versions.PangoCairo = '1.0';
 
-const { Gdk, Gio, GLib, Gtk, Pango, PangoCairo } = imports.gi;
+const { Atspi, Gdk, Gio, GLib, Gtk, Pango, PangoCairo } = imports.gi;
 const Cairo = imports.cairo;
 
 const HINTS = ['a', 's', 'd', 'f', 'j', 'k', 'l', 'g', 'h'];
@@ -27,7 +28,7 @@ function childRect(parent, index) {
 // ── AT-SPI Accessibility Semantic Target Scanner & Cache ───────────────────
 let _cachedElements = [];
 let _cacheTimestamp = 0;
-const CACHE_TTL_MS = 3000; // Reuse desktop accessibility tree for 3 seconds
+const CACHE_TTL_MS = 3000;
 
 function getScannerScriptPath() {
     const devPath = GLib.build_filenamev([GLib.path_get_dirname(new Error().fileName || ''), 'atspi_scanner.py']);
@@ -41,21 +42,42 @@ function getScannerScriptPath() {
     return '/usr/local/share/notmouse/atspi_scanner.py';
 }
 
-function fetchElementsAsync(bounds, callback) {
-    const now = Date.now();
-    if (_cachedElements.length > 0 && (now - _cacheTimestamp < CACHE_TTL_MS)) {
-        if (bounds) {
-            const filtered = _cachedElements.filter(e =>
-                e.cx >= bounds.minX && e.cx <= bounds.maxX &&
-                e.cy >= bounds.minY && e.cy <= bounds.maxY
-            );
-            callback(filtered);
-            return;
+// Quickly snapshot the PID of the active/focused desktop window before presenting the overlay (<50ms).
+function detectActiveProcessPid() {
+    try {
+        Atspi.init();
+        const desktop = Atspi.get_desktop(0);
+        if (!desktop) {
+            return null;
         }
-        callback(_cachedElements);
-        return;
-    }
+        const count = desktop.get_child_count();
+        for (let i = 0; i < count; i++) {
+            const app = desktop.get_child_at_index(i);
+            if (!app) {
+                continue;
+            }
+            const name = app.get_name();
+            if (name === 'gjs' || name === 'ibus-extension-gtk3' || name === 'evolution-alarm-notify') {
+                continue;
+            }
+            const fc = app.get_child_count();
+            for (let j = 0; j < fc; j++) {
+                const frame = app.get_child_at_index(j);
+                if (!frame) {
+                    continue;
+                }
+                const ss = frame.get_state_set();
+                if (ss && ss.contains(Atspi.StateType.ACTIVE)) {
+                    return app.get_process_id();
+                }
+            }
+        }
+    } catch (_e) {}
+    return null;
+}
 
+// Asynchronously fetch elements in background without blocking the UI or delaying window presentation.
+function fetchElementsAsync(options, callback) {
     const script = getScannerScriptPath();
     if (!GLib.file_test(script, GLib.FileTest.IS_REGULAR)) {
         callback([]);
@@ -63,8 +85,8 @@ function fetchElementsAsync(bounds, callback) {
     }
 
     const argv = ['python3', script];
-    if (bounds) {
-        argv.push(String(bounds.minX), String(bounds.maxX), String(bounds.minY), String(bounds.maxY));
+    if (options && options.pid) {
+        argv.push('--pid', String(options.pid));
     }
 
     try {
@@ -93,41 +115,20 @@ function fetchElementsAsync(bounds, callback) {
                 GLib.spawn_close_pid(pid);
                 try {
                     const parsed = JSON.parse(output);
-                    if (!bounds) {
+                    if (Array.isArray(parsed)) {
                         _cachedElements = parsed;
                         _cacheTimestamp = Date.now();
                     }
                     callback(parsed);
-                } catch (e) {
+                } catch (_err) {
                     callback([]);
                 }
                 return GLib.SOURCE_REMOVE;
             }
             return GLib.SOURCE_CONTINUE;
         });
-    } catch (e) {
+    } catch (_err) {
         callback([]);
-    }
-}
-
-// Synchronous scan — MUST be called BEFORE window.present() so that the
-// previous app still owns AT-SPI ACTIVE state (not this overlay).
-function fetchElementsSync() {
-    const script = getScannerScriptPath();
-    if (!GLib.file_test(script, GLib.FileTest.IS_REGULAR)) {
-        return;
-    }
-    try {
-        const [ok, stdout, ,] = GLib.spawn_command_line_sync(`python3 ${script}`);
-        if (!ok) return;
-        const text = new TextDecoder().decode(stdout);
-        const parsed = JSON.parse(text);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-            _cachedElements = parsed;
-            _cacheTimestamp = Date.now();
-        }
-    } catch (_e) {
-        // Silent fail — async fallback still runs after present()
     }
 }
 
@@ -1218,17 +1219,6 @@ function runOverlay() {
                 state.snappedElement = null;
                 state.snapCandidates = [];
                 state.snapIndex = -1;
-                // Fallback only if cache was somehow missed at startup
-                if (!_cachedElements || _cachedElements.length === 0) {
-                    fetchElementsAsync(null, (elements) => {
-                        if (elements && elements.length > 0) {
-                            _cachedElements = elements;
-                            if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
-                                snapToNearestElement(state, window, drawingArea);
-                            }
-                        }
-                    });
-                }
             }
 
             // If 2nd stroke was just entered, initialize target lock point and attempt magnetic snap!
@@ -1256,11 +1246,20 @@ function runOverlay() {
             window.set_default_size(geometry.width, geometry.height);
         }
         window.maximize();
-        // Scan accessible elements BEFORE presenting the overlay so that the
-        // previously-focused app still holds AT-SPI ACTIVE state.
-        fetchElementsSync();
+
+        // Instantly snapshot active window PID (<50ms) BEFORE presenting overlay
+        const targetPid = detectActiveProcessPid();
         window.present();
         drawingArea.grab_focus();
+
+        // Scan the focused window asynchronously in the background with zero UI freeze
+        fetchElementsAsync({ pid: targetPid }, (elements) => {
+            if (elements && elements.length > 0) {
+                if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
+                    snapToNearestElement(state, window, drawingArea);
+                }
+            }
+        });
 
 
         if (GLib.getenv('NOTMOUSE_SMOKE_TEST') === '1') {

@@ -10,7 +10,7 @@ import sys
 import json
 
 
-def scan(min_x=None, max_x=None, min_y=None, max_y=None):
+def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
     try:
         import gi
         gi.require_version('Atspi', '2.0')
@@ -31,30 +31,47 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None):
         'entry', 'password text', 'combo box', 'button',
     }
 
-    # Collect top-level frames that have ACTIVE state (= focused window).
-    # We walk ONLY those frames so we never snap to buttons from background windows.
     active_frames = []
     count = desktop.get_child_count()
-    for i in range(count):
-        try:
-            app = desktop.get_child_at_index(i)
-            if not app:
-                continue
-            name = app.get_name()
-            if name in ('gjs', 'ibus-extension-gtk3', 'evolution-alarm-notify'):
-                continue
-            for j in range(app.get_child_count()):
-                try:
-                    frame = app.get_child_at_index(j)
-                    if not frame:
-                        continue
-                    state_set = frame.get_state_set()
-                    if state_set and state_set.contains(Atspi.StateType.ACTIVE):
-                        active_frames.append(frame)
-                except Exception:
+
+    # Fast path: if target_pid is specified, match the exact process directly
+    if target_pid is not None:
+        for i in range(count):
+            try:
+                app = desktop.get_child_at_index(i)
+                if not app:
                     continue
-        except Exception:
-            continue
+                if app.get_process_id() == target_pid:
+                    for j in range(app.get_child_count()):
+                        frame = app.get_child_at_index(j)
+                        if frame:
+                            active_frames.append(frame)
+                    break
+            except Exception:
+                continue
+
+    # If no target_pid or PID match yielded no frames, search for window with ACTIVE state
+    if not active_frames:
+        for i in range(count):
+            try:
+                app = desktop.get_child_at_index(i)
+                if not app:
+                    continue
+                name = app.get_name()
+                if name in ('gjs', 'ibus-extension-gtk3', 'evolution-alarm-notify'):
+                    continue
+                for j in range(app.get_child_count()):
+                    try:
+                        frame = app.get_child_at_index(j)
+                        if not frame:
+                            continue
+                        state_set = frame.get_state_set()
+                        if state_set and state_set.contains(Atspi.StateType.ACTIVE):
+                            active_frames.append(frame)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
 
     # Fallback: if no ACTIVE frame found, scan everything visible so the
     # overlay degrades gracefully instead of returning nothing.
@@ -166,10 +183,47 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None):
 
 
 if __name__ == '__main__':
-    min_x = float(sys.argv[1]) if len(sys.argv) > 1 else None
-    max_x = float(sys.argv[2]) if len(sys.argv) > 2 else None
-    min_y = float(sys.argv[3]) if len(sys.argv) > 3 else None
-    max_y = float(sys.argv[4]) if len(sys.argv) > 4 else None
+    target_pid = None
+    min_x = None
+    max_x = None
+    min_y = None
+    max_y = None
 
-    res = scan(min_x, max_x, min_y, max_y)
+    args = sys.argv[1:]
+    i = 0
+    pos_args = []
+    while i < len(args):
+        arg = args[i]
+        if arg in ('--pid', '-p') and i + 1 < len(args):
+            try:
+                target_pid = int(args[i + 1])
+            except ValueError:
+                pass
+            i += 2
+        else:
+            pos_args.append(arg)
+            i += 1
+
+    if len(pos_args) > 0:
+        try:
+            min_x = float(pos_args[0])
+        except ValueError:
+            pass
+    if len(pos_args) > 1:
+        try:
+            max_x = float(pos_args[1])
+        except ValueError:
+            pass
+    if len(pos_args) > 2:
+        try:
+            min_y = float(pos_args[2])
+        except ValueError:
+            pass
+    if len(pos_args) > 3:
+        try:
+            max_y = float(pos_args[3])
+        except ValueError:
+            pass
+
+    res = scan(min_x, max_x, min_y, max_y, target_pid=target_pid)
     json.dump(res, sys.stdout)
