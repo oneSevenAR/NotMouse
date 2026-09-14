@@ -1046,13 +1046,10 @@ function runOverlay() {
                     dismissOverlay(window, application);
                     return true;
                 }
-                // Click and stay: click and STAY locked without unmapping or resetting state!
+                // Click and stay: click and STAY locked on target!
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
-                    const surface = window.get_surface();
-                    if (surface) {
-                        surface.set_input_region(new Cairo.Region());
-                    }
+                    window.set_visible(false);
                     sendEvent({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
@@ -1060,22 +1057,14 @@ function runOverlay() {
                     });
 
                     state.lastClickTime = GLib.get_monotonic_time();
-                    drawingArea.queue_draw();
 
-                    // Animate click ripple smoothly for ~280ms
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
-                        if (state.lastClickTime && (GLib.get_monotonic_time() - state.lastClickTime) < 280000) {
-                            drawingArea.queue_draw();
-                            return GLib.SOURCE_CONTINUE;
-                        }
-                        drawingArea.queue_draw();
-                        return GLib.SOURCE_REMOVE;
-                    });
-
-                    // Ensure keyboard focus remains pinned on overlay
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+                    // Re-present overlay immediately after click completes (~60ms),
+                    // KEEPING all state completely locked in place!
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 60, () => {
+                        window.set_visible(true);
                         window.present();
                         drawingArea.grab_focus();
+                        drawingArea.queue_draw();
                         return GLib.SOURCE_REMOVE;
                     });
                     return true;
@@ -1247,13 +1236,10 @@ function runOverlay() {
                     return true;
                 }
 
-                // Click and stay: click and STAY on the targeted element without unmapping or resetting navigation!
+                // Click and stay: click and STAY on the targeted element!
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
-                    const surface = window.get_surface();
-                    if (surface) {
-                        surface.set_input_region(new Cairo.Region());
-                    }
+                    window.set_visible(false);
                     sendEvent({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
@@ -1261,22 +1247,14 @@ function runOverlay() {
                     });
 
                     state.lastClickTime = GLib.get_monotonic_time();
-                    drawingArea.queue_draw();
 
-                    // Animate click ripple smoothly for ~280ms
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
-                        if (state.lastClickTime && (GLib.get_monotonic_time() - state.lastClickTime) < 280000) {
-                            drawingArea.queue_draw();
-                            return GLib.SOURCE_CONTINUE;
-                        }
-                        drawingArea.queue_draw();
-                        return GLib.SOURCE_REMOVE;
-                    });
-
-                    // Ensure keyboard focus remains pinned on overlay
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+                    // Re-present overlay immediately after click completes (~60ms),
+                    // KEEPING all state (coordinates, micro-cell, reticle lock) completely locked!
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 60, () => {
+                        window.set_visible(true);
                         window.present();
                         drawingArea.grab_focus();
+                        drawingArea.queue_draw();
                         return GLib.SOURCE_REMOVE;
                     });
                     return true;
