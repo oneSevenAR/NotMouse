@@ -1,11 +1,18 @@
-imports.gi.versions.Atspi = '2.0';
 imports.gi.versions.Gdk = '4.0';
 imports.gi.versions.Gtk = '4.0';
 imports.gi.versions.Pango = '1.0';
 imports.gi.versions.PangoCairo = '1.0';
 
-const { Atspi, Gdk, Gio, GLib, Gtk, Pango, PangoCairo } = imports.gi;
+const { Gdk, Gio, GLib, Gtk, Pango, PangoCairo } = imports.gi;
 const Cairo = imports.cairo;
+
+let Atspi = null;
+try {
+    imports.gi.versions.Atspi = '2.0';
+    Atspi = imports.gi.Atspi;
+} catch (_e) {
+    Atspi = null;
+}
 
 const HINTS = ['a', 's', 'd', 'f', 'j', 'k', 'l', 'g', 'h'];
 const GRID_SIZE = 3;
@@ -45,6 +52,9 @@ function getScannerScriptPath() {
 // Quickly snapshot the PID of the active/focused desktop window before presenting the overlay (<50ms).
 function detectActiveProcessPid() {
     try {
+        if (!Atspi) {
+            return null;
+        }
         Atspi.init();
         const desktop = Atspi.get_desktop(0);
         if (!desktop) {
