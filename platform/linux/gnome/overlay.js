@@ -110,6 +110,27 @@ function fetchElementsAsync(bounds, callback) {
     }
 }
 
+// Synchronous scan — MUST be called BEFORE window.present() so that the
+// previous app still owns AT-SPI ACTIVE state (not this overlay).
+function fetchElementsSync() {
+    const script = getScannerScriptPath();
+    if (!GLib.file_test(script, GLib.FileTest.IS_REGULAR)) {
+        return;
+    }
+    try {
+        const [ok, stdout, ,] = GLib.spawn_command_line_sync(`python3 ${script}`);
+        if (!ok) return;
+        const text = new TextDecoder().decode(stdout);
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+            _cachedElements = parsed;
+            _cacheTimestamp = Date.now();
+        }
+    } catch (_e) {
+        // Silent fail — async fallback still runs after present()
+    }
+}
+
 function snapToNearestElement(state, window, drawingArea) {
     if (!state.point || !window) {
         return;
@@ -1126,15 +1147,12 @@ function runOverlay() {
             window.set_default_size(geometry.width, geometry.height);
         }
         window.maximize();
+        // Scan accessible elements BEFORE presenting the overlay so that the
+        // previously-focused app still holds AT-SPI ACTIVE state.
+        fetchElementsSync();
         window.present();
         drawingArea.grab_focus();
 
-        // Background prefetch all active desktop accessible elements for instant snapping
-        fetchElementsAsync(null, (elements) => {
-            if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
-                snapToNearestElement(state, window, drawingArea);
-            }
-        });
 
         if (GLib.getenv('NOTMOUSE_SMOKE_TEST') === '1') {
             GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
