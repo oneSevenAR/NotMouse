@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/oneSevenAR/NotMouse/actions/workflows/ci.yml/badge.svg)](https://github.com/oneSevenAR/NotMouse/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/oneSevenAR/NotMouse)](https://github.com/oneSevenAR/NotMouse/releases)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 A fast, keyboard-driven pointer navigation layer for Linux desktops (GNOME/Wayland).
 
@@ -98,4 +98,4 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for internal design and Wayland
 
 ## License
 
-Dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+Licensed under the [GNU General Public License v3.0](LICENSE).
