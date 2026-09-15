@@ -35,7 +35,20 @@ function childRect(parent, index) {
 // ── AT-SPI Accessibility Semantic Target Scanner & Cache ───────────────────
 let _cachedElements = [];
 let _cacheTimestamp = 0;
-const CACHE_TTL_MS = 3000;
+let _activeScanId = 0;
+const CACHE_TTL_MS = 2500;
+
+function getValidCachedElements() {
+    if (!_cachedElements || _cachedElements.length === 0) {
+        return null;
+    }
+    if (_cacheTimestamp > 0 && (Date.now() - _cacheTimestamp > CACHE_TTL_MS)) {
+        _cachedElements = [];
+        _cacheTimestamp = 0;
+        return null;
+    }
+    return _cachedElements;
+}
 
 function getScannerScriptPath() {
     const devPath = GLib.build_filenamev([GLib.path_get_dirname(new Error().fileName || ''), 'atspi_scanner.py']);
@@ -88,9 +101,10 @@ function detectActiveProcessPid() {
 
 // Asynchronously fetch elements in background without blocking the UI or delaying window presentation.
 function fetchElementsAsync(options, callback) {
+    const scanId = ++_activeScanId;
     const script = getScannerScriptPath();
     if (!GLib.file_test(script, GLib.FileTest.IS_REGULAR)) {
-        callback([]);
+        if (callback) callback([]);
         return;
     }
 
@@ -108,7 +122,7 @@ function fetchElementsAsync(options, callback) {
             null
         );
         if (!success) {
-            callback([]);
+            if (callback) callback([]);
             return;
         }
 
@@ -123,22 +137,26 @@ function fetchElementsAsync(options, callback) {
             }
             if (cond & GLib.IOCondition.HUP) {
                 GLib.spawn_close_pid(pid);
+                if (scanId !== _activeScanId) {
+                    // Outdated scan! Another scan was triggered or cache was invalidated. Discard silently.
+                    return GLib.SOURCE_REMOVE;
+                }
                 try {
                     const parsed = JSON.parse(output);
                     if (Array.isArray(parsed)) {
                         _cachedElements = parsed;
                         _cacheTimestamp = Date.now();
                     }
-                    callback(parsed);
+                    if (callback) callback(parsed);
                 } catch (_err) {
-                    callback([]);
+                    if (callback) callback([]);
                 }
                 return GLib.SOURCE_REMOVE;
             }
             return GLib.SOURCE_CONTINUE;
         });
     } catch (_err) {
-        callback([]);
+        if (callback) callback([]);
     }
 }
 
@@ -153,19 +171,30 @@ function snapToNearestElement(state, window, drawingArea) {
     const targetPxX = state.point.x * winW;
     const targetPxY = state.point.y * winH;
 
-    const source = (_cachedElements && _cachedElements.length > 0)
-        ? _cachedElements
-        : (state.nearbyElements || []);
+    const source = getValidCachedElements();
 
     if (!source || source.length === 0) {
+        // Cache is empty or expired. Trigger a fresh async scan to populate it.
+        const targetPid = detectActiveProcessPid();
+        fetchElementsAsync({ pid: targetPid }, (elements) => {
+            if (elements && elements.length > 0) {
+                if (state.path.length >= MAX_DEPTH && state.point) {
+                    snapToNearestElement(state, window, drawingArea);
+                }
+            }
+        });
         return;
     }
 
-    // Strictly confine candidates inside the selected micro cell boundary
-    const cellMinX = state.rect.x * winW;
-    const cellMaxX = (state.rect.x + state.rect.width) * winW;
-    const cellMinY = state.rect.y * winH;
-    const cellMaxY = (state.rect.y + state.rect.height) * winH;
+    // Strictly confine candidates inside the selected micro cell boundary.
+    // A small tolerance (4px) is applied so elements whose centroids sit at the
+    // very edge of a cell (e.g. GitHub "Code" tab flush with a cell boundary)
+    // are not silently excluded.
+    const CELL_TOLERANCE_PX = 4;
+    const cellMinX = state.rect.x * winW - CELL_TOLERANCE_PX;
+    const cellMaxX = (state.rect.x + state.rect.width) * winW + CELL_TOLERANCE_PX;
+    const cellMinY = state.rect.y * winH - CELL_TOLERANCE_PX;
+    const cellMaxY = (state.rect.y + state.rect.height) * winH + CELL_TOLERANCE_PX;
 
     const inCell = source.filter(e =>
         e.cx >= cellMinX && e.cx <= cellMaxX &&
@@ -933,6 +962,13 @@ function showOverlay(state, window, drawingArea, startUs = null) {
         } catch (_e) {}
     }
 
+    // Always flush element cache on every summon — the user may have navigated
+    // to a new page since the last overlay use, so stale cached elements from
+    // the previous URL should never be served.
+    _activeScanId++;
+    _cachedElements = [];
+    _cacheTimestamp = 0;
+
     // Scan the focused window asynchronously in the background with zero UI freeze
     fetchElementsAsync({ pid: targetPid }, (elements) => {
         if (elements && elements.length > 0) {
@@ -1097,6 +1133,10 @@ function runOverlay() {
                 // Click and stay: click and STAY locked on target!
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
+                    // Capture link flag BEFORE clearing state — nav links (GitHub tabs etc.)
+                    // trigger SPA page transitions that take ~500–800ms to settle in the DOM.
+                    const wasNavLink = Boolean(state.snappedElement && state.snappedElement.is_link);
+
                     window.set_visible(false);
                     sendEvent({
                         event: 'click',
@@ -1107,6 +1147,7 @@ function runOverlay() {
                     state.lastClickTime = GLib.get_monotonic_time();
 
                     // Invalidate stale element cache since the click may mutate/destroy UI elements
+                    _activeScanId++;
                     _cachedElements = [];
                     _cacheTimestamp = 0;
                     state.snappedElement = null;
@@ -1122,13 +1163,20 @@ function runOverlay() {
                         drawingArea.queue_draw();
                         startRippleAnimation(drawingArea, state);
 
-                        const targetPid = detectActiveProcessPid();
-                        fetchElementsAsync({ pid: targetPid }, (elements) => {
-                            if (elements && elements.length > 0) {
-                                if (state.path.length >= MAX_DEPTH && state.point) {
-                                    snapToNearestElement(state, window, drawingArea);
+                        // For nav-link clicks (SPA page transitions), delay the rescan by an
+                        // additional 550ms so the browser has time to render the new page before
+                        // AT-SPI walks the DOM. Button clicks keep the original fast path.
+                        const rescanDelay = wasNavLink ? 550 : 0;
+                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, rescanDelay, () => {
+                            const targetPid = detectActiveProcessPid();
+                            fetchElementsAsync({ pid: targetPid }, (elements) => {
+                                if (elements && elements.length > 0) {
+                                    if (state.path.length >= MAX_DEPTH && state.point) {
+                                        snapToNearestElement(state, window, drawingArea);
+                                    }
                                 }
-                            }
+                            });
+                            return GLib.SOURCE_REMOVE;
                         });
 
                         return GLib.SOURCE_REMOVE;
@@ -1278,6 +1326,21 @@ function runOverlay() {
                     state.rect = previous;
                     state.path.pop();
                     state.point = null;
+                    state.snappedElement = null;
+                    state.snapCandidates = [];
+                    state.snapIndex = -1;
+
+                    // If returning to root after a click occurred (e.g. user clicked a tab/link
+                    // and backed out to aim at a new target on the new page), flush stale cache
+                    // and start a fresh scan immediately.
+                    if (state.path.length === 0 && state.lastClickTime > 0) {
+                        _activeScanId++;
+                        _cachedElements = [];
+                        _cacheTimestamp = 0;
+                        const targetPid = detectActiveProcessPid();
+                        fetchElementsAsync({ pid: targetPid }, null);
+                    }
+
                     drawingArea.queue_draw();
                 }
                 return true;
@@ -1305,6 +1368,10 @@ function runOverlay() {
                 // Click and stay: click and STAY on the targeted element!
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
+                    // Capture link flag BEFORE clearing state — nav links (GitHub tabs etc.)
+                    // trigger SPA page transitions that take ~500–800ms to settle in the DOM.
+                    const wasNavLink = Boolean(state.snappedElement && state.snappedElement.is_link);
+
                     window.set_visible(false);
                     sendEvent({
                         event: 'click',
@@ -1315,6 +1382,7 @@ function runOverlay() {
                     state.lastClickTime = GLib.get_monotonic_time();
 
                     // Invalidate stale element cache since the click may mutate/destroy UI elements
+                    _activeScanId++;
                     _cachedElements = [];
                     _cacheTimestamp = 0;
                     state.snappedElement = null;
@@ -1330,11 +1398,18 @@ function runOverlay() {
                         drawingArea.queue_draw();
                         startRippleAnimation(drawingArea, state);
 
-                        const targetPid = detectActiveProcessPid();
-                        fetchElementsAsync({ pid: targetPid }, (elements) => {
-                            if (state.path.length >= MAX_DEPTH && state.point) {
-                                snapToNearestElement(state, window, drawingArea);
-                            }
+                        // For nav-link clicks (SPA page transitions), delay the rescan by an
+                        // additional 550ms so the browser has time to render the new page before
+                        // AT-SPI walks the DOM. Button clicks keep the original fast path.
+                        const rescanDelay = wasNavLink ? 550 : 0;
+                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, rescanDelay, () => {
+                            const targetPid = detectActiveProcessPid();
+                            fetchElementsAsync({ pid: targetPid }, (elements) => {
+                                if (state.path.length >= MAX_DEPTH && state.point) {
+                                    snapToNearestElement(state, window, drawingArea);
+                                }
+                            });
+                            return GLib.SOURCE_REMOVE;
                         });
 
                         return GLib.SOURCE_REMOVE;
@@ -1360,11 +1435,13 @@ function runOverlay() {
 
                 // Tab / Shift+Tab: cycle through snappable elements near current point
                 if (keyval === Gdk.KEY_Tab || keyval === Gdk.KEY_ISO_Left_Tab) {
-                    // If no candidates yet, build them from current point
-                    if (state.snapCandidates.length === 0) {
+                    // If no candidates yet or cache expired, re-evaluate candidates
+                    if (state.snapCandidates.length === 0 || !getValidCachedElements()) {
                         snapToNearestElement(state, window, drawingArea);
                     }
-                    cycleSnap(state, window, drawingArea, isShift ? -1 : 1);
+                    if (state.snapCandidates.length > 0) {
+                        cycleSnap(state, window, drawingArea, isShift ? -1 : 1);
+                    }
                     return true;
                 }
 
