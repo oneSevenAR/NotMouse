@@ -127,12 +127,15 @@
     2. Implemented zero-net-delta relative twitch (`+1` then `-1` px) in `move_to_normalized` and `poke_pointer_focus`. Relative events are never deduplicated by kernel `evdev`, forcing Mutter to re-evaluate actor pick and dispatch `wl_pointer.enter`.
     3. In `overlay.js`, added `ensureScrollFocused(state, window)` to guarantee cursor position and pointer focus are committed before any scroll keystroke (`j`, `k`, `h`, `l`, etc.) is dispatched.
 
-- [x] **Cross-Application Element Bleeding in AT-SPI Scanner ([Issue #11](https://github.com/oneSevenAR/NotMouse/issues/11))**
-  - **Symptom:** On Reddit in Vivaldi, cycling through snap candidates in a region shows buttons/tabs from LibreWolf (which is open in the background).
-  - **Root Cause:** In `atspi_scanner.py`, `active_frames` merged frames from every application reporting `ACTIVE`, and the fallback appended every window on the desktop. In Gecko (LibreWolf/Firefox), `StateType.ACTIVE` remains permanently `True` on the top-level frame even when backgrounded.
-  - **Fix Implemented:**
-    1. Replaced multi-app frame merging with an application priority ranking engine (`FOCUSED` descendant +150, `ACTIVE` frame +100, target bounds +50, desktop z-order index) that strictly selects ONE single foreground application.
-    2. Converted element coordinate extraction from `CoordType.WINDOW` to absolute screen coordinates (`fx + bx, fy + by`) based on top-level window extents.
-    3. Tagged every element with `app_name` and `app_pid`.
-    4. In `overlay.js` `snapToNearestElement`, filtered candidates strictly to the cell's primary application.
+- [ ] **AT-SPI Active Window Focus Inversion & Candidate Selection ([Issue #11](https://github.com/oneSevenAR/NotMouse/issues/11))**
+  - **Symptom:** On the `ptyxis` terminal window, pressing `Super+Shift+M` and typing `a->a` targets LibreWolf's browser tab instead of Ptyxis's "New Terminal" button.
+  - **Root Cause:**
+    1. **Focus Inversion Timing:** `showOverlay()` calls `window.set_visible(true)` and `window.present()` *before* spawning `atspi_scanner.py`. The `!mouse` overlay immediately gains compositor focus, causing Ptyxis (GTK 4) and other windows to drop their `Atspi.StateType.ACTIVE` and `FOCUSED` flags before the scanner inspects the desktop.
+    2. **Degenerated Scoring:** When no underlying app has active/focused flags, the scoring engine falls back to the AT-SPI desktop array index (`score = i`). LibreWolf (index 8) outranks Ptyxis (index 7), causing LibreWolf to be selected as the "active" application even though Ptyxis was the active foreground window before summon.
+    3. **Null Accessible Node Exception:** In `check_focus()`, `node.get_child_at_index(c)` returned `None` in Vivaldi, causing an unhandled `AttributeError: 'NoneType' object has no attribute 'get_state_set'` that skipped Vivaldi entirely.
+  - **Action Plan:**
+    1. **Active PID Tracking in Resident Daemon:** In `notmouse daemon`, maintain the true foreground application PID via an AT-SPI `window:activate` event listener that ignores `notmouse` overlay mappings. Pass `--pid <active_pid>` when invoking `atspi_scanner.py`.
+    2. **Null-Safe Traversal in `atspi_scanner.py`:** Add `if not node: return` guard at the top of `check_focus` to prevent Chromium/Vivaldi placeholder crashes.
+    3. **Geometry-Based Fallback:** When no active PID is known and multiple inactive apps exist, rank candidate apps based on whether their visible extents intersect the current monitor / reticle coordinates instead of the arbitrary AT-SPI desktop array index.
+
 
