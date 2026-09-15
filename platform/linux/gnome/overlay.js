@@ -140,7 +140,7 @@ function snapToNearestElement(state, window, drawingArea) {
     const cellMinY = state.rect.y * winH - CELL_TOLERANCE_PX;
     const cellMaxY = (state.rect.y + state.rect.height) * winH + CELL_TOLERANCE_PX;
 
-    const inCell = source.filter(e =>
+    let inCell = source.filter(e =>
         e.cx >= cellMinX && e.cx <= cellMaxX &&
         e.cy >= cellMinY && e.cy <= cellMaxY
     );
@@ -153,6 +153,12 @@ function snapToNearestElement(state, window, drawingArea) {
             drawingArea.queue_draw();
         }
         return;
+    }
+
+    // Ensure all cycled candidates strictly belong to the primary application in the cell
+    const primaryApp = inCell[0].app_name;
+    if (primaryApp) {
+        inCell = inCell.filter(e => e.app_name === primaryApp);
     }
 
     // ── Reading-order sort ────────────────────────────────────────────────────
@@ -855,6 +861,14 @@ function emitSelection(state, action, window) {
     });
 }
 
+function ensureScrollFocused(state, window) {
+    if (!state.scrollFocused) {
+        const target = getScreenCoordinates(state, window);
+        sendEvent({ event: 'move', x: target.x, y: target.y });
+        state.scrollFocused = true;
+    }
+}
+
 function resetOverlayState(state) {
     state.mode = 'grid';
     state.path = [];
@@ -863,6 +877,7 @@ function resetOverlayState(state) {
     state.point = null;
     state.scrollSpeed = 5;
     state.lastScrollDir = null;
+    state.scrollFocused = false;
     state.dragging = false;
     state.dragStartPoint = null;
     state.snappedElement = null;
@@ -995,6 +1010,7 @@ function runOverlay() {
             point: null,
             scrollSpeed: 5,
             lastScrollDir: null,
+            scrollFocused: false,
             dragging: false,
             dragStartPoint: null,
             snappedElement: null,
@@ -1206,6 +1222,7 @@ function runOverlay() {
                 }
 
                 if (char === 'j' || char === 's' || keyval === Gdk.KEY_Down) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'down';
                     sendEvent({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * mult });
                     drawingArea.queue_draw();
@@ -1213,6 +1230,7 @@ function runOverlay() {
                 }
 
                 if (char === 'k' || char === 'w' || keyval === Gdk.KEY_Up) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'up';
                     sendEvent({ event: 'scroll', dx: 0, dy: state.scrollSpeed * mult });
                     drawingArea.queue_draw();
@@ -1220,6 +1238,7 @@ function runOverlay() {
                 }
 
                 if (char === 'd' || keyval === Gdk.KEY_Page_Down) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'down';
                     sendEvent({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * 3 * mult });
                     drawingArea.queue_draw();
@@ -1227,6 +1246,7 @@ function runOverlay() {
                 }
 
                 if (char === 'u' || keyval === Gdk.KEY_Page_Up) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'up';
                     sendEvent({ event: 'scroll', dx: 0, dy: state.scrollSpeed * 3 * mult });
                     drawingArea.queue_draw();
@@ -1234,6 +1254,7 @@ function runOverlay() {
                 }
 
                 if (char === 'h' || keyval === Gdk.KEY_Left) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'left';
                     sendEvent({ event: 'scroll', dx: -state.scrollSpeed * mult, dy: 0 });
                     drawingArea.queue_draw();
@@ -1241,6 +1262,7 @@ function runOverlay() {
                 }
 
                 if (char === 'l' || keyval === Gdk.KEY_Right) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'right';
                     sendEvent({ event: 'scroll', dx: state.scrollSpeed * mult, dy: 0 });
                     drawingArea.queue_draw();
@@ -1412,6 +1434,7 @@ function runOverlay() {
                 // Scroll Mode (Continuous Interactive Kinetic Scroll)
                 if (char === 's' || char === 'w') {
                     state.mode = 'scroll';
+                    state.scrollFocused = false;
                     const target = getScreenCoordinates(state, window);
                     const surface = window.get_surface();
                     if (surface) {
@@ -1421,12 +1444,15 @@ function runOverlay() {
                     state.lastScrollDir = null;
                     drawingArea.queue_draw();
 
-                    // Delay slightly so Mutter commits the empty input region, then move the
-                    // pointer to the target position so the underlying window receives scroll
-                    // focus. Do NOT auto-scroll here — the user decides when to scroll via j/k.
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+                    // Prime cursor position immediately
+                    sendEvent({ event: 'move', x: target.x, y: target.y });
+
+                    // Re-dispatch move after Mutter commits empty input region to guarantee wl_pointer.enter
+                    // reaches the target window before user begins scrolling via j/k.
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
                         if (state.mode === 'scroll') {
                             sendEvent({ event: 'move', x: target.x, y: target.y });
+                            state.scrollFocused = true;
                         }
                         return GLib.SOURCE_REMOVE;
                     });
