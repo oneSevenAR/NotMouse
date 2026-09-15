@@ -182,20 +182,44 @@ function snapToNearestElement(state, window, drawingArea) {
         return;
     }
 
-    // Build sorted candidates list for cycling within this cell
-    const withDist = inCell.map(elem => {
-        const dx = elem.cx - targetPxX;
-        const dy = elem.cy - targetPxY;
-        return { elem, distSq: dx * dx + dy * dy };
-    });
-    withDist.sort((a, b) => a.distSq - b.distSq);
-    state.snapCandidates = withDist.map(e => e.elem);
+    // ── Reading-order sort ────────────────────────────────────────────────────
+    // Bucket elements into horizontal rows using adaptive row banding:
+    //   - Sort by Y first, then within each cluster of elements whose Y centers
+    //     are within ROW_BAND_PX of each other, treat them as the same row and
+    //     sort by X left-to-right.
+    // Controls (buttons, inputs, tabs) are always listed before links within the
+    // same row, so Tab lands on functional buttons first in dense mixed cells.
+    const ROW_BAND_PX = 14; // px — elements within this vertical distance share a row
 
-    // Auto-snap to nearest element in this cell
-    state.snapIndex = 0;
-    state.snappedElement = withDist[0].elem;
-    state.point.x = withDist[0].elem.cx / winW;
-    state.point.y = withDist[0].elem.cy / winH;
+    // Sort: primary by cy, secondary by cx (reading order seed)
+    const sorted = inCell.slice().sort((a, b) => {
+        if (Math.abs(a.cy - b.cy) <= ROW_BAND_PX) {
+            // Same row: controls before links, then left-to-right
+            const aIsLink = a.is_link ? 1 : 0;
+            const bIsLink = b.is_link ? 1 : 0;
+            if (aIsLink !== bIsLink) return aIsLink - bIsLink;
+            return a.cx - b.cx;
+        }
+        return a.cy - b.cy;
+    });
+
+    state.snapCandidates = sorted;
+
+    // Auto-snap to the element nearest the reticle in reading-order list
+    // (closest by Euclidean distance to give a natural starting anchor)
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < sorted.length; i++) {
+        const dx = sorted[i].cx - targetPxX;
+        const dy = sorted[i].cy - targetPxY;
+        const d = dx * dx + dy * dy;
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    state.snapIndex = bestIdx;
+    state.snappedElement = sorted[bestIdx];
+    state.point.x = sorted[bestIdx].cx / winW;
+    state.point.y = sorted[bestIdx].cy / winH;
+
 
     if (drawingArea) {
         drawingArea.queue_draw();
@@ -698,13 +722,19 @@ function drawOverlay(area, context, width, height, state) {
             badgeText = state.path.join('').toUpperCase();
         }
 
+        // Links get a warm amber badge; controls keep the electric cyan badge
+        const isSnapLink = isSnapped && state.snappedElement.is_link;
         drawLabel(area, context, badgeText, reticleX, reticleY - 36, {
             fontSize: isSnapped ? 12 : 16,
             paddingX: isSnapped ? 10 : 10,
             paddingY: 5,
             preserveCase: true,
-            bg: isSnapped ? [0.08, 0.18, 0.28, 0.96] : [0.97, 0.72, 0.18, 0.98],
-            fg: isSnapped ? [0.18, 0.85, 0.98, 1.0] : [0.05, 0.06, 0.09, 1.0],
+            bg: isSnapped
+                ? (isSnapLink ? [0.20, 0.14, 0.05, 0.96] : [0.08, 0.18, 0.28, 0.96])
+                : [0.97, 0.72, 0.18, 0.98],
+            fg: isSnapped
+                ? (isSnapLink ? [0.98, 0.75, 0.18, 1.0] : [0.18, 0.85, 0.98, 1.0])
+                : [0.05, 0.06, 0.09, 1.0],
         });
     }
 
@@ -724,7 +754,8 @@ function drawOverlay(area, context, width, height, state) {
         breadcrumb = `Region ${state.path[0].toUpperCase()}  —  Stroke 2: choose target  [Enter] Region center  [Backspace] Undo`;
     } else {
         if (state.snappedElement) {
-            const role = state.snappedElement.role || 'element';
+            const rawRole = state.snappedElement.role || 'element';
+            const role = state.snappedElement.is_link ? 'nav link' : rawRole;
             const name = state.snappedElement.name ? `"${state.snappedElement.name.slice(0, 28)}"` : '';
             const total = state.snapCandidates ? state.snapCandidates.length : 0;
             const tabHint = total > 1 ? `  [Tab] ${state.snapIndex + 1}/${total}` : '';
