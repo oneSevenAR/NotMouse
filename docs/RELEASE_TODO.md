@@ -99,7 +99,33 @@
 
 ## 5. Release Tagging
 
-- [x] **Git Tag & Release Creation**
+- [x] **Git Tag & Release Creation (v0.1.0)**
   - Create annotated git tag: `git tag -a v0.1.0 -m "Release v0.1.0: Keyboard-first interaction layer for Linux"`
   - Push tag: `git push origin v0.1.0`
   - Generate GitHub Release with changelog notes and binary artifacts.
+
+---
+
+## 6. Active Bugs & Next Milestones (v0.2.0)
+
+- [ ] **Release v0.2.0 Milestone Tagging**
+  - Consolidate merged features since v0.1.0 (PR #5, PR #6, PR #7, PR #9):
+    - Sub-25ms resident warm overlay architecture (`notmouse-overlay.sock`, async scanner)
+    - Strict cell candidate bounds for snapping
+    - Click & Stay (`c`) target preservation + Mutter remap + neon green ripple animation
+    - Reading order sort with row banding
+    - Curated link support (heuristics for nav links / tabs with amber badges)
+  - Bump workspace version to `0.2.0` in `Cargo.toml`.
+  - Update `CHANGELOG.md` with `## [0.2.0]` section.
+  - Tag and push `v0.2.0` on GitHub.
+
+- [ ] **Scroll Mode Wayland Pointer Focus on Window Switch ([Issue #4](https://github.com/oneSevenAR/NotMouse/issues/4))**
+  - **Symptom:** When Alt+Tabbing to a window (e.g. Vivaldi on Reddit) and entering scroll mode (`s`), scroll inputs either take time to kick in or fail entirely until the user manually clicks somewhere on the page.
+  - **Root Cause:** In GNOME Mutter on Wayland, virtual uinput scroll events (`REL_WHEEL`) are only dispatched to the surface that currently holds Wayland pointer focus. Moving the virtual cursor via `ABS_X`/`ABS_Y` under an empty input region does not force Mutter to transfer pointer focus to an unfocused window without an explicit pointer button/surface event.
+  - **Action Plan:** Implement pointer focus acquisition upon entering scroll mode (e.g. non-activating pointer focus synchronization or zero-motion micro-event sequence to commit Wayland focus).
+
+- [ ] **Cross-Application Element Bleeding in AT-SPI Scanner ([Issue #11](https://github.com/oneSevenAR/NotMouse/issues/11))**
+  - **Symptom:** On Reddit in Vivaldi, cycling through snap candidates in a region shows buttons/tabs from LibreWolf (which is open in the background).
+  - **Root Cause:** In `atspi_scanner.py`, target frames are selected by checking `Atspi.StateType.ACTIVE`. Because the `!mouse` overlay itself has compositor focus, background windows lose their `ACTIVE` state. When no frame reports `ACTIVE`, the scanner falls back to scanning every visible application on the desktop, mixing background app elements into the foreground candidate list.
+  - **Action Plan:** Snapshot the true foreground window/PID at hotkey press before the overlay maps, and restrict `atspi_scanner.py` strictly to the top-most window z-order / target PID.
+
