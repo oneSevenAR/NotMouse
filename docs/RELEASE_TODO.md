@@ -119,13 +119,20 @@
   - Update `CHANGELOG.md` with `## [0.2.0]` section.
   - Tag and push `v0.2.0` on GitHub.
 
-- [ ] **Scroll Mode Wayland Pointer Focus on Window Switch ([Issue #4](https://github.com/oneSevenAR/NotMouse/issues/4))**
+- [x] **Scroll Mode Wayland Pointer Focus on Window Switch ([Issue #4](https://github.com/oneSevenAR/NotMouse/issues/4))**
   - **Symptom:** When Alt+Tabbing to a window (e.g. Vivaldi on Reddit) and entering scroll mode (`s`), scroll inputs either take time to kick in or fail entirely until the user manually clicks somewhere on the page.
-  - **Root Cause:** In GNOME Mutter on Wayland, virtual uinput scroll events (`REL_WHEEL`) are only dispatched to the surface that currently holds Wayland pointer focus. Moving the virtual cursor via `ABS_X`/`ABS_Y` under an empty input region does not force Mutter to transfer pointer focus to an unfocused window without an explicit pointer button/surface event.
-  - **Action Plan:** Implement pointer focus acquisition upon entering scroll mode (e.g. non-activating pointer focus synchronization or zero-motion micro-event sequence to commit Wayland focus).
+  - **Root Cause:** In GNOME Mutter on Wayland, virtual uinput scroll events (`REL_WHEEL`) are only dispatched to the surface that currently holds Wayland pointer focus. Moving the virtual cursor via `ABS_X`/`ABS_Y` under an empty input region does not force Mutter to transfer pointer focus to an unfocused window without relative motion or pointer interaction.
+  - **Fix Implemented:**
+    1. Added `REL_X` and `REL_Y` axes to `VirtualDevice` in `crates/notmouse/src/input.rs`.
+    2. Implemented zero-net-delta relative twitch (`+1` then `-1` px) in `move_to_normalized` and `poke_pointer_focus`. Relative events are never deduplicated by kernel `evdev`, forcing Mutter to re-evaluate actor pick and dispatch `wl_pointer.enter`.
+    3. In `overlay.js`, added `ensureScrollFocused(state, window)` to guarantee cursor position and pointer focus are committed before any scroll keystroke (`j`, `k`, `h`, `l`, etc.) is dispatched.
 
-- [ ] **Cross-Application Element Bleeding in AT-SPI Scanner ([Issue #11](https://github.com/oneSevenAR/NotMouse/issues/11))**
+- [x] **Cross-Application Element Bleeding in AT-SPI Scanner ([Issue #11](https://github.com/oneSevenAR/NotMouse/issues/11))**
   - **Symptom:** On Reddit in Vivaldi, cycling through snap candidates in a region shows buttons/tabs from LibreWolf (which is open in the background).
-  - **Root Cause:** In `atspi_scanner.py`, target frames are selected by checking `Atspi.StateType.ACTIVE`. Because the `!mouse` overlay itself has compositor focus, background windows lose their `ACTIVE` state. When no frame reports `ACTIVE`, the scanner falls back to scanning every visible application on the desktop, mixing background app elements into the foreground candidate list.
-  - **Action Plan:** Snapshot the true foreground window/PID at hotkey press before the overlay maps, and restrict `atspi_scanner.py` strictly to the top-most window z-order / target PID.
+  - **Root Cause:** In `atspi_scanner.py`, `active_frames` merged frames from every application reporting `ACTIVE`, and the fallback appended every window on the desktop. In Gecko (LibreWolf/Firefox), `StateType.ACTIVE` remains permanently `True` on the top-level frame even when backgrounded.
+  - **Fix Implemented:**
+    1. Replaced multi-app frame merging with an application priority ranking engine (`FOCUSED` descendant +150, `ACTIVE` frame +100, target bounds +50, desktop z-order index) that strictly selects ONE single foreground application.
+    2. Converted element coordinate extraction from `CoordType.WINDOW` to absolute screen coordinates (`fx + bx, fy + by`) based on top-level window extents.
+    3. Tagged every element with `app_name` and `app_pid`.
+    4. In `overlay.js` `snapToNearestElement`, filtered candidates strictly to the cell's primary application.
 
