@@ -25,11 +25,23 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
         return []
 
     elements = []
-    ACTIONABLE = {
+    # Roles that are unambiguously interactive controls.
+    CONTROL_ROLES = {
         'push button', 'toggle button', 'check box', 'radio button',
         'page tab', 'menu item', 'check menu item', 'radio menu item',
         'entry', 'password text', 'combo box', 'button',
     }
+    # 'link' is included separately because navigation links (GitHub tabs, breadcrumbs,
+    # sidebar menus) behave like buttons but are exposed as anchor elements.
+    # We apply stricter heuristics to prevent inline article text links from flooding
+    # the candidate list.
+    LINK_ROLE = 'link'
+    # Minimum bounding-box size to accept a link as a snap candidate.
+    # Inline word-level hyperlinks are typically narrow (< 16 px tall); navigation
+    # tabs and buttons tend to be at least 16 px tall and 20 px wide.
+    LINK_MIN_W = 20
+    LINK_MIN_H = 14
+
 
     active_frames = []
     count = desktop.get_child_count()
@@ -131,7 +143,12 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
                         return
 
                     role = node.get_role_name()
-                    if role in ACTIONABLE and b.width >= 10 and b.height >= 10:
+                    is_control = role in CONTROL_ROLES and b.width >= 10 and b.height >= 10
+                    is_link = (role == LINK_ROLE
+                                and b.width >= LINK_MIN_W
+                                and b.height >= LINK_MIN_H)
+
+                    if is_control or is_link:
                         # Must be SHOWING — element and all ancestors are actually rendered
                         ss = node.get_state_set()
                         if ss and ss.contains(Atspi.StateType.SHOWING):
@@ -147,6 +164,7 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
                                     elements.append({
                                         'name': node.get_name(),
                                         'role': role,
+                                        'is_link': is_link and not is_control,
                                         'x': b.x,
                                         'y': b.y,
                                         'w': b.width,
@@ -160,6 +178,7 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
                 walk(node.get_child_at_index(c), depth + 1, frame_w, frame_h)
         except Exception:
             pass
+
 
     for frame in active_frames:
         fw, fh = frame_bounds.get(id(frame), (99999, 99999))
