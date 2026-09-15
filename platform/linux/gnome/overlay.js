@@ -1402,16 +1402,15 @@ function runOverlay() {
                         surface.set_input_region(new Cairo.Region());
                     }
 
-                    const isUp = char === 'w' || isShift;
-                    state.lastScrollDir = isUp ? 'up' : 'down';
+                    state.lastScrollDir = null;
                     drawingArea.queue_draw();
 
-                    // Delay slightly so Mutter commits empty input region, then emit pointer motion
-                    // so Mutter transfers pointer focus to the underlying window, followed by initial scroll!
+                    // Delay slightly so Mutter commits the empty input region, then move the
+                    // pointer to the target position so the underlying window receives scroll
+                    // focus. Do NOT auto-scroll here — the user decides when to scroll via j/k.
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
                         if (state.mode === 'scroll') {
                             sendEvent({ event: 'move', x: target.x, y: target.y });
-                            sendEvent({ event: 'scroll', dx: 0, dy: isUp ? 5 : -5 });
                         }
                         return GLib.SOURCE_REMOVE;
                     });
