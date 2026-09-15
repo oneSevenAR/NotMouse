@@ -85,6 +85,8 @@ impl InputDevice {
         let mut rel_axes = AttributeSet::<RelativeAxisCode>::new();
         rel_axes.insert(RelativeAxisCode::REL_WHEEL);
         rel_axes.insert(RelativeAxisCode::REL_HWHEEL);
+        rel_axes.insert(RelativeAxisCode::REL_X);
+        rel_axes.insert(RelativeAxisCode::REL_Y);
 
         let x_axis_info = AbsInfo::new(0, 0, ABS_MAX_RANGE, 0, 0, 100);
         let y_axis_info = AbsInfo::new(0, 0, ABS_MAX_RANGE, 0, 0, 100);
@@ -119,6 +121,11 @@ impl InputDevice {
 
     /// Moves the pointer to normalized screen coordinates $(x, y) \in [0.0, 1.0]$.
     ///
+    /// Also emits a zero-net-delta relative twitch (`+1px` then `-1px`) so that the
+    /// Linux kernel `evdev` layer never deduplicates unchanged absolute coordinates,
+    /// and Mutter/Wayland unconditionally synthesizes `wl_pointer.enter` to the
+    /// underlying application window (e.g. browser tab after `Alt+Tab`).
+    ///
     /// # Errors
     ///
     /// Returns [`InputError::Emit`] if emitting the event fails.
@@ -135,6 +142,10 @@ impl InputDevice {
             InputEvent::new(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, abs_x),
             InputEvent::new(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Y.0, abs_y),
             InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+            InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, 1),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+            InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, -1),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
         ];
 
         self.device.emit(&events).map_err(InputError::Emit)?;
@@ -146,10 +157,48 @@ impl InputDevice {
     /// # Errors
     ///
     /// Returns [`InputError::Emit`] if emitting the event fails.
-    #[allow(dead_code, clippy::unused_self, clippy::unnecessary_wraps)]
-    pub fn move_relative(&mut self, _dx: i32, _dy: i32) -> Result<(), InputError> {
-        // Pointer uses absolute coordinate space mapped to monitor display outputs.
+    #[allow(dead_code)]
+    pub fn move_relative(&mut self, dx: i32, dy: i32) -> Result<(), InputError> {
+        let mut events = Vec::new();
+        if dx != 0 {
+            events.push(InputEvent::new(
+                EventType::RELATIVE.0,
+                RelativeAxisCode::REL_X.0,
+                dx,
+            ));
+        }
+        if dy != 0 {
+            events.push(InputEvent::new(
+                EventType::RELATIVE.0,
+                RelativeAxisCode::REL_Y.0,
+                dy,
+            ));
+        }
+        if !events.is_empty() {
+            events.push(InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0));
+            self.device.emit(&events).map_err(InputError::Emit)?;
+        }
         Ok(())
+    }
+
+    /// Pokes the Wayland compositor seat to refresh pointer focus at current cursor position.
+    ///
+    /// Emits a zero-net-delta relative twitch (`+1` then `-1` px) on `REL_X`. Relative events
+    /// are never deduplicated by `evdev` or `libinput`, forcing GNOME Mutter / Wayland to
+    /// pick the actor directly under the pointer and dispatch `wl_pointer.enter` to the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InputError::Emit`] if emitting the event fails.
+    #[allow(dead_code)]
+    pub fn poke_pointer_focus(&mut self) -> Result<(), InputError> {
+        let events = [
+            InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, 1),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+            InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, -1),
+            InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+        ];
+        self.device.emit(&events).map_err(InputError::Emit)
     }
 
     /// Presses a mouse button down without releasing it.

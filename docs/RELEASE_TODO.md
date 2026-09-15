@@ -99,7 +99,43 @@
 
 ## 5. Release Tagging
 
-- [x] **Git Tag & Release Creation**
+- [x] **Git Tag & Release Creation (v0.1.0)**
   - Create annotated git tag: `git tag -a v0.1.0 -m "Release v0.1.0: Keyboard-first interaction layer for Linux"`
   - Push tag: `git push origin v0.1.0`
   - Generate GitHub Release with changelog notes and binary artifacts.
+
+---
+
+## 6. Active Bugs & Next Milestones (v0.2.0)
+
+- [ ] **Release v0.2.0 Milestone Tagging**
+  - Consolidate merged features since v0.1.0 (PR #5, PR #6, PR #7, PR #9):
+    - Sub-25ms resident warm overlay architecture (`notmouse-overlay.sock`, async scanner)
+    - Strict cell candidate bounds for snapping
+    - Click & Stay (`c`) target preservation + Mutter remap + neon green ripple animation
+    - Reading order sort with row banding
+    - Curated link support (heuristics for nav links / tabs with amber badges)
+  - Bump workspace version to `0.2.0` in `Cargo.toml`.
+  - Update `CHANGELOG.md` with `## [0.2.0]` section.
+  - Tag and push `v0.2.0` on GitHub.
+
+- [x] **Scroll Mode Wayland Pointer Focus on Window Switch ([Issue #4](https://github.com/oneSevenAR/NotMouse/issues/4))**
+  - **Symptom:** When Alt+Tabbing to a window (e.g. Vivaldi on Reddit) and entering scroll mode (`s`), scroll inputs either take time to kick in or fail entirely until the user manually clicks somewhere on the page.
+  - **Root Cause:** In GNOME Mutter on Wayland, virtual uinput scroll events (`REL_WHEEL`) are only dispatched to the surface that currently holds Wayland pointer focus. Moving the virtual cursor via `ABS_X`/`ABS_Y` under an empty input region does not force Mutter to transfer pointer focus to an unfocused window without relative motion or pointer interaction.
+  - **Fix Implemented:**
+    1. Added `REL_X` and `REL_Y` axes to `VirtualDevice` in `crates/notmouse/src/input.rs`.
+    2. Implemented zero-net-delta relative twitch (`+1` then `-1` px) in `move_to_normalized` and `poke_pointer_focus`. Relative events are never deduplicated by kernel `evdev`, forcing Mutter to re-evaluate actor pick and dispatch `wl_pointer.enter`.
+    3. In `overlay.js`, added `ensureScrollFocused(state, window)` to guarantee cursor position and pointer focus are committed before any scroll keystroke (`j`, `k`, `h`, `l`, etc.) is dispatched.
+
+- [ ] **AT-SPI Active Window Focus Inversion & Candidate Selection ([Issue #11](https://github.com/oneSevenAR/NotMouse/issues/11))**
+  - **Symptom:** On the `ptyxis` terminal window, pressing `Super+Shift+M` and typing `a->a` targets LibreWolf's browser tab instead of Ptyxis's "New Terminal" button.
+  - **Root Cause:**
+    1. **Focus Inversion Timing:** `showOverlay()` calls `window.set_visible(true)` and `window.present()` *before* spawning `atspi_scanner.py`. The `!mouse` overlay immediately gains compositor focus, causing Ptyxis (GTK 4) and other windows to drop their `Atspi.StateType.ACTIVE` and `FOCUSED` flags before the scanner inspects the desktop.
+    2. **Degenerated Scoring:** When no underlying app has active/focused flags, the scoring engine falls back to the AT-SPI desktop array index (`score = i`). LibreWolf (index 8) outranks Ptyxis (index 7), causing LibreWolf to be selected as the "active" application even though Ptyxis was the active foreground window before summon.
+    3. **Null Accessible Node Exception:** In `check_focus()`, `node.get_child_at_index(c)` returned `None` in Vivaldi, causing an unhandled `AttributeError: 'NoneType' object has no attribute 'get_state_set'` that skipped Vivaldi entirely.
+  - **Action Plan:**
+    1. **Active PID Tracking in Resident Daemon:** In `notmouse daemon`, maintain the true foreground application PID via an AT-SPI `window:activate` event listener that ignores `notmouse` overlay mappings. Pass `--pid <active_pid>` when invoking `atspi_scanner.py`.
+    2. **Null-Safe Traversal in `atspi_scanner.py`:** Add `if not node: return` guard at the top of `check_focus` to prevent Chromium/Vivaldi placeholder crashes.
+    3. **Geometry-Based Fallback:** When no active PID is known and multiple inactive apps exist, rank candidate apps based on whether their visible extents intersect the current monitor / reticle coordinates instead of the arbitrary AT-SPI desktop array index.
+
+
