@@ -10,6 +10,7 @@ pub enum OverlayMode {
     Grid,
     FreeRoam,
     Scroll,
+    TopBar,
 }
 
 pub struct OverlayDrawState {
@@ -19,6 +20,7 @@ pub struct OverlayDrawState {
     pub point: Option<(f64, f64)>,
     pub dragging: bool,
     pub drag_start_point: Option<(f64, f64)>,
+    pub top_bar_target: Option<char>,
     pub snapped_element: Option<AccessibleElement>,
     pub snap_candidates: Vec<AccessibleElement>,
     pub snap_index: usize,
@@ -57,6 +59,7 @@ pub fn draw_overlay(
         OverlayMode::Scroll => draw_scroll_hud(area, cr, w, h, state),
         OverlayMode::FreeRoam => draw_free_roam_hud(area, cr, w, h, state),
         OverlayMode::Grid => draw_grid(area, cr, w, h, state),
+        OverlayMode::TopBar => draw_topbar(area, cr, w, h, state),
     }
 }
 
@@ -626,4 +629,103 @@ fn draw_rounded_rect(cr: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     cr.line_to(x, y + r);
     cr.arc(x + r, y + r, r, pi, -pi / 2.0);
     cr.close_path();
+}
+
+fn draw_topbar(
+    area: &gtk4::DrawingArea,
+    cr: &Context,
+    width: f64,
+    height: f64,
+    state: &OverlayDrawState,
+) {
+    // Subtle background tint
+    cr.set_source_rgba(0.01, 0.02, 0.04, 0.06);
+    cr.rectangle(0.0, 0.0, width, height);
+    let _ = cr.fill();
+
+    // 3 top bar target zones along top edge
+    let zones = [
+        ('A', 'a', "ACTIVITIES", 68.0f64.max(0.013 * width)),
+        ('S', 's', "CLOCK / DATE", 0.500 * width),
+        (
+            'D',
+            'd',
+            "SETTINGS / WIFI",
+            (width - 70.0).min(0.973 * width),
+        ),
+    ];
+
+    // Glowing golden top border
+    cr.set_source_rgba(0.97, 0.72, 0.18, 0.90);
+    cr.set_line_width(3.0);
+    cr.move_to(0.0, 1.5);
+    cr.line_to(width, 1.5);
+    let _ = cr.stroke();
+
+    for (key, id, name, zx) in zones {
+        let is_selected = state.top_bar_target == Some(id);
+        let label = format!("{key} • {name}");
+        draw_label(
+            area,
+            cr,
+            &label,
+            zx,
+            26.0,
+            12,
+            12.0,
+            6.0,
+            if is_selected {
+                (0.97, 0.72, 0.18, 0.95)
+            } else {
+                (0.10, 0.14, 0.22, 0.95)
+            },
+            if is_selected {
+                (0.05, 0.08, 0.12, 1.0)
+            } else {
+                (0.97, 0.72, 0.18, 1.0)
+            },
+            true,
+        );
+    }
+
+    // Reticle
+    let reticle_x = state.point.map_or(0.973 * width, |(px, _)| px * width);
+    let reticle_y = 16.0;
+    draw_reticle(cr, reticle_x, reticle_y, false, state.last_click_time_ms);
+
+    // Upward arrow pointing into top bar
+    cr.set_source_rgba(0.97, 0.72, 0.18, 1.0);
+    cr.move_to(reticle_x, 2.0);
+    cr.line_to(reticle_x - 8.0, 14.0);
+    cr.line_to(reticle_x + 8.0, 14.0);
+    cr.close_path();
+    let _ = cr.fill();
+
+    // Floating HUD at bottom
+    let bar_w = (width - 40.0).min(820.0);
+    let bar_h = 44.0;
+    let bar_x = (width - bar_w) / 2.0;
+    let bar_y = height - bar_h - 24.0;
+
+    cr.set_source_rgba(0.06, 0.08, 0.12, 0.92);
+    cr.rectangle(bar_x, bar_y, bar_w, bar_h);
+    let _ = cr.fill();
+
+    cr.set_source_rgba(0.97, 0.72, 0.18, 0.85);
+    cr.set_line_width(1.0);
+    cr.rectangle(bar_x, bar_y, bar_w, bar_h);
+    let _ = cr.stroke();
+
+    let text = "Top Bar — [a] Activities [s] Clock [d] Settings [c] Stay [Enter] Click [Tab] Grid [Esc] Exit";
+    let layout = area.create_pango_layout(Some(text));
+    let font_desc = pango::FontDescription::from_string("Sans 12");
+    layout.set_font_description(Some(&font_desc));
+    let (text_w, text_h) = layout.pixel_size();
+
+    cr.set_source_rgba(0.80, 0.88, 1.0, 0.90);
+    cr.move_to(
+        bar_x + (bar_w - f64::from(text_w)) / 2.0,
+        bar_y + (bar_h - f64::from(text_h)) / 2.0,
+    );
+    pangocairo::functions::show_layout(cr, &layout);
 }

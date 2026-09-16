@@ -25,6 +25,7 @@ pub struct State {
     pub point: Option<(f64, f64)>,
     pub dragging: bool,
     pub drag_start_point: Option<(f64, f64)>,
+    pub top_bar_target: Option<char>,
     pub snapped_element: Option<AccessibleElement>,
     pub snap_candidates: Vec<AccessibleElement>,
     pub snap_index: usize,
@@ -53,6 +54,7 @@ impl Default for State {
             point: None,
             dragging: false,
             drag_start_point: None,
+            top_bar_target: None,
             snapped_element: None,
             snap_candidates: Vec::new(),
             snap_index: 0,
@@ -96,9 +98,11 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
     provider.load_from_string(
         "window,
          window.background,
+         window.maximized,
          window.fullscreen,
          .background,
          .fullscreen,
+         .maximized,
          .notmouse-overlay,
          drawingarea {
              background-color: rgba(0, 0, 0, 0);
@@ -115,6 +119,12 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
             gtk4::STYLE_PROVIDER_PRIORITY_USER,
         );
     }
+
+    window.connect_realize(|w| {
+        if let Some(surface) = w.surface() {
+            surface.set_opaque_region(None);
+        }
+    });
 
     let state = Rc::new(RefCell::new(State::default()));
     let input_device = Rc::new(RefCell::new(InputDevice::new().ok()));
@@ -140,6 +150,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                 point: s.point,
                 dragging: s.dragging,
                 drag_start_point: s.drag_start_point,
+                top_bar_target: s.top_bar_target,
                 snapped_element: s.snapped_element.clone(),
                 snap_candidates: s.snap_candidates.clone(),
                 snap_index: s.snap_index,
@@ -167,9 +178,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                 let win_h = f64::from(window.height());
                 if let Some((nx, ny)) = s.kinematics.update(0.016, win_w, win_h) {
                     s.point = Some((nx, ny));
-                    if let Some(ref mut dev) = *input_device.borrow_mut() {
-                        let _ = dev.move_to_normalized(nx, ny);
-                    }
+                    emit_cursor_move(&input_device, &window, s.mode, nx, ny);
                     drawing_area.queue_draw();
                 }
             }
@@ -207,7 +216,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     Key::Tab => {
                         // Return to Fullscreen Grid mode
                         s.mode = OverlayMode::Grid;
-                        window.fullscreen();
+                        show_overlay_window(&window);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
@@ -271,7 +280,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     Key::Tab => {
                         // Return to Fullscreen Grid mode
                         s.mode = OverlayMode::Grid;
-                        window.fullscreen();
+                        show_overlay_window(&window);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
@@ -285,29 +294,32 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         }
                         emit_click(
                             &input_device,
+                            &window,
+                            s.mode,
                             if is_shift {
                                 MouseButton::Right
                             } else {
                                 MouseButton::Left
                             },
+                            s.point,
                         );
                         dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::r => {
-                        emit_click(&input_device, MouseButton::Right);
+                        emit_click(&input_device, &window, s.mode, MouseButton::Right, s.point);
                         dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::d => {
-                        emit_click(&input_device, MouseButton::Left);
+                        emit_click(&input_device, &window, s.mode, MouseButton::Left, s.point);
                         std::thread::sleep(Duration::from_millis(50));
-                        emit_click(&input_device, MouseButton::Left);
+                        emit_click(&input_device, &window, s.mode, MouseButton::Left, s.point);
                         dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::m => {
-                        emit_click(&input_device, MouseButton::Middle);
+                        emit_click(&input_device, &window, s.mode, MouseButton::Middle, s.point);
                         dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
@@ -333,7 +345,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     Key::s | Key::w => {
                         // Switch to Scroll HUD
                         s.mode = OverlayMode::Scroll;
-                        window.unfullscreen();
+                        window.unmaximize();
                         window.set_default_size(560, 48);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
@@ -341,36 +353,112 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     Key::h | Key::Left => {
                         let (nx, ny) = s.kinematics.press_direction(Direction::Left, win_w, win_h);
                         s.point = Some((nx, ny));
-                        if let Some(ref mut dev) = *input_device.borrow_mut() {
-                            let _ = dev.move_to_normalized(nx, ny);
-                        }
+                        emit_cursor_move(&input_device, &window, s.mode, nx, ny);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
                     Key::l | Key::Right => {
                         let (nx, ny) = s.kinematics.press_direction(Direction::Right, win_w, win_h);
                         s.point = Some((nx, ny));
-                        if let Some(ref mut dev) = *input_device.borrow_mut() {
-                            let _ = dev.move_to_normalized(nx, ny);
-                        }
+                        emit_cursor_move(&input_device, &window, s.mode, nx, ny);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
                     Key::k | Key::Up => {
                         let (nx, ny) = s.kinematics.press_direction(Direction::Up, win_w, win_h);
                         s.point = Some((nx, ny));
-                        if let Some(ref mut dev) = *input_device.borrow_mut() {
-                            let _ = dev.move_to_normalized(nx, ny);
-                        }
+                        emit_cursor_move(&input_device, &window, s.mode, nx, ny);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
                     Key::j | Key::Down => {
                         let (nx, ny) = s.kinematics.press_direction(Direction::Down, win_w, win_h);
                         s.point = Some((nx, ny));
-                        if let Some(ref mut dev) = *input_device.borrow_mut() {
-                            let _ = dev.move_to_normalized(nx, ny);
-                        }
+                        emit_cursor_move(&input_device, &window, s.mode, nx, ny);
+                        drawing_area.queue_draw();
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+                return glib::Propagation::Proceed;
+            }
+
+            // ── TOP BAR MODE ──────────────────────────────────────────────────
+            if s.mode == OverlayMode::TopBar {
+                match keyval {
+                    Key::Escape | Key::q => {
+                        dismiss_overlay(&window, &app, is_resident);
+                        return glib::Propagation::Stop;
+                    }
+                    Key::Tab | Key::BackSpace => {
+                        s.mode = OverlayMode::Grid;
+                        s.point = None;
+                        s.top_bar_target = None;
+                        drawing_area.queue_draw();
+                        return glib::Propagation::Stop;
+                    }
+                    Key::Return | Key::KP_Enter | Key::space => {
+                        emit_click(
+                            &input_device,
+                            &window,
+                            s.mode,
+                            if is_shift {
+                                MouseButton::Right
+                            } else {
+                                MouseButton::Left
+                            },
+                            s.point,
+                        );
+                        dismiss_overlay(&window, &app, is_resident);
+                        return glib::Propagation::Stop;
+                    }
+                    Key::r => {
+                        emit_click(&input_device, &window, s.mode, MouseButton::Right, s.point);
+                        dismiss_overlay(&window, &app, is_resident);
+                        return glib::Propagation::Stop;
+                    }
+                    Key::c => {
+                        emit_click(
+                            &input_device,
+                            &window,
+                            s.mode,
+                            if is_shift {
+                                MouseButton::Right
+                            } else {
+                                MouseButton::Left
+                            },
+                            s.point,
+                        );
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        s.last_click_time_ms = now_ms;
+                        drawing_area.queue_draw();
+                        return glib::Propagation::Stop;
+                    }
+                    Key::a => {
+                        s.top_bar_target = Some('a');
+                        let win_w = f64::from(window.width().max(1));
+                        let nx = (68.0f64.max(0.013 * win_w)) / win_w;
+                        s.point = Some((nx, 0.0));
+                        emit_cursor_move(&input_device, &window, s.mode, nx, 0.0);
+                        drawing_area.queue_draw();
+                        return glib::Propagation::Stop;
+                    }
+                    Key::s => {
+                        s.top_bar_target = Some('s');
+                        s.point = Some((0.500, 0.0));
+                        emit_cursor_move(&input_device, &window, s.mode, 0.500, 0.0);
+                        drawing_area.queue_draw();
+                        return glib::Propagation::Stop;
+                    }
+                    Key::d => {
+                        s.top_bar_target = Some('d');
+                        let win_w = f64::from(window.width().max(1));
+                        let nx = ((win_w - 70.0).min(0.973 * win_w)) / win_w;
+                        s.point = Some((nx, 0.0));
+                        emit_cursor_move(&input_device, &window, s.mode, nx, 0.0);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
@@ -416,29 +504,32 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         }
                         emit_click(
                             &input_device,
+                            &window,
+                            s.mode,
                             if is_shift {
                                 MouseButton::Right
                             } else {
                                 MouseButton::Left
                             },
+                            s.point,
                         );
                         dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::r => {
-                        emit_click(&input_device, MouseButton::Right);
+                        emit_click(&input_device, &window, s.mode, MouseButton::Right, s.point);
                         dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::d => {
-                        emit_click(&input_device, MouseButton::Left);
+                        emit_click(&input_device, &window, s.mode, MouseButton::Left, s.point);
                         std::thread::sleep(Duration::from_millis(50));
-                        emit_click(&input_device, MouseButton::Left);
+                        emit_click(&input_device, &window, s.mode, MouseButton::Left, s.point);
                         dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::m => {
-                        emit_click(&input_device, MouseButton::Middle);
+                        emit_click(&input_device, &window, s.mode, MouseButton::Middle, s.point);
                         dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
@@ -469,7 +560,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         s.mode = OverlayMode::FreeRoam;
                         let initial = s.point.unwrap_or((0.5, 0.5));
                         s.kinematics = FreeRoamKinematics::new(initial.0, initial.1);
-                        window.unfullscreen();
+                        window.unmaximize();
                         window.set_default_size(680, 48);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
@@ -478,7 +569,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     Key::s | Key::w => {
                         s.mode = OverlayMode::Scroll;
                         s.last_scroll_dir = Some(if keyval == Key::w { "up" } else { "down" });
-                        window.unfullscreen();
+                        window.unmaximize();
                         window.set_default_size(560, 48);
                         let mult = if is_shift { 3 } else { 1 };
                         emit_scroll(
@@ -507,7 +598,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         s.last_click_time_ms = now_ms;
 
                         window.set_visible(false);
-                        emit_click(&input_device, btn);
+                        emit_click(&input_device, &window, s.mode, btn, s.point);
 
                         let w_clone = window.clone();
                         let da_clone = drawing_area.clone();
@@ -538,7 +629,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             s.mode = OverlayMode::FreeRoam;
                             let initial = s.point.unwrap_or((0.5, 0.5));
                             s.kinematics = FreeRoamKinematics::new(initial.0, initial.1);
-                            window.unfullscreen();
+                            window.unmaximize();
                             window.set_default_size(680, 48);
                             drawing_area.queue_draw();
                         }
@@ -559,36 +650,35 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
 
                             let win_w = f64::from(window.width());
                             let win_h = f64::from(window.height());
-                            let nx = candidate.cx / win_w;
-                            let ny = candidate.cy / win_h;
+                            let (offset_x, offset_y) = get_window_offsets(&window);
+                            let nx = ((candidate.cx - offset_x) / win_w).clamp(0.0, 1.0);
+                            let ny = ((candidate.cy - offset_y) / win_h).clamp(0.0, 1.0);
                             s.point = Some((nx, ny));
 
                             // Live pointer coupling on cycle!
-                            if let Some(ref mut dev) = *input_device.borrow_mut() {
-                                let _ = dev.move_to_normalized(nx, ny);
-                            }
+                            emit_cursor_move(&input_device, &window, s.mode, nx, ny);
                             drawing_area.queue_draw();
                         }
                         return glib::Propagation::Stop;
                     }
                     // Nudge
                     Key::h | Key::Left => {
-                        nudge_reticle(&mut s, &input_device, -0.005, 0.0);
+                        nudge_reticle(&mut s, &input_device, &window, -0.005, 0.0);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
                     Key::l | Key::Right => {
-                        nudge_reticle(&mut s, &input_device, 0.005, 0.0);
+                        nudge_reticle(&mut s, &input_device, &window, 0.005, 0.0);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
                     Key::k | Key::Up => {
-                        nudge_reticle(&mut s, &input_device, 0.0, -0.005);
+                        nudge_reticle(&mut s, &input_device, &window, 0.0, -0.005);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
                     Key::j | Key::Down => {
-                        nudge_reticle(&mut s, &input_device, 0.0, 0.005);
+                        nudge_reticle(&mut s, &input_device, &window, 0.0, 0.005);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
@@ -609,11 +699,14 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                 }
                 emit_click(
                     &input_device,
+                    &window,
+                    s.mode,
                     if is_shift {
                         MouseButton::Right
                     } else {
                         MouseButton::Left
                     },
+                    s.point,
                 );
                 dismiss_overlay(&window, &app, is_resident);
                 return glib::Propagation::Stop;
@@ -624,8 +717,20 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                 s.mode = OverlayMode::FreeRoam;
                 let initial = s.point.unwrap_or((0.5, 0.5));
                 s.kinematics = FreeRoamKinematics::new(initial.0, initial.1);
-                window.unfullscreen();
+                window.unmaximize();
                 window.set_default_size(680, 48);
+                drawing_area.queue_draw();
+                return glib::Propagation::Stop;
+            }
+
+            // Stroke 1 Top Bar mode shortcut (t)
+            if s.path.is_empty() && keyval == Key::t {
+                s.mode = OverlayMode::TopBar;
+                s.top_bar_target = Some('d');
+                let win_w = f64::from(window.width().max(1));
+                let nx = ((win_w - 70.0).min(0.973 * win_w)) / win_w;
+                s.point = Some((nx, 0.0));
+                emit_cursor_move(&input_device, &window, s.mode, nx, 0.0);
                 drawing_area.queue_draw();
                 return glib::Propagation::Stop;
             }
@@ -661,20 +766,30 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
             // Instantly dispatch OS cursor movement to the center of the chosen cell!
             // Autohiding elements (YouTube player controls, video overlays, dropdowns)
             // receive real Wayland mousemove events immediately!
-            if let Some(ref mut dev) = *input_device.borrow_mut() {
-                let _ = dev.move_to_normalized(center_x, center_y);
-            }
+            emit_cursor_move(&input_device, &window, s.mode, center_x, center_y);
 
             // Stroke 2 entered: attempt magnetic snap to element!
             if s.path.len() >= 2 {
                 let win_w = f64::from(window.width());
                 let win_h = f64::from(window.height());
-                let target_px_x = center_x * win_w;
-                let target_px_y = center_y * win_h;
-                let cell_min_x = s.rect.x * win_w;
-                let cell_max_x = (s.rect.x + s.rect.width) * win_w;
-                let cell_min_y = s.rect.y * win_h;
-                let cell_max_y = (s.rect.y + s.rect.height) * win_h;
+                let (screen_target_x, screen_target_y) =
+                    map_window_to_screen(&window, s.mode, center_x, center_y);
+                let (screen_cell_min_x, screen_cell_min_y) =
+                    map_window_to_screen(&window, s.mode, s.rect.x, s.rect.y);
+                let (screen_cell_max_x, screen_cell_max_y) = map_window_to_screen(
+                    &window,
+                    s.mode,
+                    s.rect.x + s.rect.width,
+                    s.rect.y + s.rect.height,
+                );
+
+                let (_, _, desk_w, desk_h) = get_desktop_bounds();
+                let target_px_x = screen_target_x * desk_w;
+                let target_px_y = screen_target_y * desk_h;
+                let cell_min_x = screen_cell_min_x * desk_w;
+                let cell_max_x = screen_cell_max_x * desk_w;
+                let cell_min_y = screen_cell_min_y * desk_h;
+                let cell_max_y = screen_cell_max_y * desk_h;
 
                 let snap_res = atspi::snap_to_nearest(
                     &s.cached_elements,
@@ -687,17 +802,16 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                 );
 
                 if let Some(candidate) = snap_res.candidate {
-                    let nx = candidate.cx / win_w;
-                    let ny = candidate.cy / win_h;
+                    let (offset_x, offset_y) = get_window_offsets(&window);
+                    let nx = ((candidate.cx - offset_x) / win_w).clamp(0.0, 1.0);
+                    let ny = ((candidate.cy - offset_y) / win_h).clamp(0.0, 1.0);
                     s.point = Some((nx, ny));
                     s.snapped_element = Some(candidate);
                     s.snap_candidates = snap_res.all_candidates;
                     s.snap_index = snap_res.index;
 
                     // Magnetic cursor snap dispatch
-                    if let Some(ref mut dev) = *input_device.borrow_mut() {
-                        let _ = dev.move_to_normalized(nx, ny);
-                    }
+                    emit_cursor_move(&input_device, &window, s.mode, nx, ny);
                 }
             }
 
@@ -730,8 +844,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
         setup_overlay_socket(state.clone(), window.clone(), drawing_area.clone());
         // Pre-warm Wayland surface and GTK pipeline invisibly
         window.set_opacity(0.0);
-        window.fullscreen();
-        window.present();
+        show_overlay_window(&window);
 
         let w_clone = window.clone();
         glib::idle_add_local(move || {
@@ -740,13 +853,24 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
             glib::ControlFlow::Break
         });
     } else {
-        // True Fullscreen coverage: 100% physical display coverage
-        window.fullscreen();
-        window.present();
+        show_overlay_window(&window);
         drawing_area.grab_focus();
 
         // Trigger initial background AT-SPI scan
         trigger_background_scan(&state, &drawing_area, &window);
+    }
+}
+
+fn show_overlay_window(window: &gtk4::ApplicationWindow) {
+    if let Some(monitor) = get_active_monitor(Some(window)) {
+        let geom = monitor.geometry();
+        window.set_default_size(geom.width(), geom.height());
+    }
+    window.maximize();
+    window.set_visible(true);
+    window.present();
+    if let Some(surface) = window.surface() {
+        surface.set_opaque_region(None);
     }
 }
 
@@ -795,13 +919,12 @@ fn setup_overlay_socket(
                 };
                 s.history.clear();
                 s.point = None;
+                s.top_bar_target = None;
                 s.snapped_element = None;
                 s.snap_candidates.clear();
                 s.snap_index = 0;
             }
-            window.fullscreen();
-            window.set_visible(true);
-            window.present();
+            show_overlay_window(&window);
             drawing_area.grab_focus();
             drawing_area.queue_draw();
             trigger_background_scan(&state, &drawing_area, &window);
@@ -842,12 +965,24 @@ fn trigger_background_scan(
                 let win_w = f64::from(win.width());
                 let win_h = f64::from(win.height());
                 let (center_x, center_y) = s.point.unwrap_or((0.5, 0.5));
-                let target_px_x = center_x * win_w;
-                let target_px_y = center_y * win_h;
-                let cell_min_x = s.rect.x * win_w;
-                let cell_max_x = (s.rect.x + s.rect.width) * win_w;
-                let cell_min_y = s.rect.y * win_h;
-                let cell_max_y = (s.rect.y + s.rect.height) * win_h;
+                let (screen_target_x, screen_target_y) =
+                    map_window_to_screen(&win, s.mode, center_x, center_y);
+                let (screen_cell_min_x, screen_cell_min_y) =
+                    map_window_to_screen(&win, s.mode, s.rect.x, s.rect.y);
+                let (screen_cell_max_x, screen_cell_max_y) = map_window_to_screen(
+                    &win,
+                    s.mode,
+                    s.rect.x + s.rect.width,
+                    s.rect.y + s.rect.height,
+                );
+
+                let (_, _, desk_w, desk_h) = get_desktop_bounds();
+                let target_px_x = screen_target_x * desk_w;
+                let target_px_y = screen_target_y * desk_h;
+                let cell_min_x = screen_cell_min_x * desk_w;
+                let cell_max_x = screen_cell_max_x * desk_w;
+                let cell_min_y = screen_cell_min_y * desk_h;
+                let cell_max_y = screen_cell_max_y * desk_h;
 
                 let snap_res = atspi::snap_to_nearest(
                     &s.cached_elements,
@@ -859,7 +994,10 @@ fn trigger_background_scan(
                     cell_max_y,
                 );
                 if let Some(candidate) = snap_res.candidate {
-                    s.point = Some((candidate.cx / win_w, candidate.cy / win_h));
+                    let (offset_x, offset_y) = get_window_offsets(&win);
+                    let nx = ((candidate.cx - offset_x) / win_w).clamp(0.0, 1.0);
+                    let ny = ((candidate.cy - offset_y) / win_h).clamp(0.0, 1.0);
+                    s.point = Some((nx, ny));
                     s.snapped_element = Some(candidate);
                     s.snap_candidates = snap_res.all_candidates;
                     s.snap_index = snap_res.index;
@@ -872,7 +1010,142 @@ fn trigger_background_scan(
     });
 }
 
-fn nudge_reticle(s: &mut State, input_device: &Rc<RefCell<Option<InputDevice>>>, dx: f64, dy: f64) {
+fn get_active_monitor(window: Option<&gtk4::ApplicationWindow>) -> Option<gtk4::gdk::Monitor> {
+    let display = gtk4::gdk::Display::default()?;
+    if let Some(w) = window
+        && let Some(surface) = w.surface()
+        && let Some(m) = display.monitor_at_surface(&surface)
+    {
+        return Some(m);
+    }
+    let monitors = display.monitors();
+    if monitors.n_items() > 0 {
+        monitors
+            .item(0)
+            .and_then(|obj| obj.downcast::<gtk4::gdk::Monitor>().ok())
+    } else {
+        None
+    }
+}
+
+fn get_desktop_bounds() -> (f64, f64, f64, f64) {
+    let Some(display) = gtk4::gdk::Display::default() else {
+        return (0.0, 0.0, 1920.0, 1080.0);
+    };
+    let monitors = display.monitors();
+    let count = monitors.n_items();
+    if count == 0 {
+        return (0.0, 0.0, 1920.0, 1080.0);
+    }
+
+    let mut min_x = 0i32;
+    let mut min_y = 0i32;
+    let mut max_x = 0i32;
+    let mut max_y = 0i32;
+
+    for i in 0..count {
+        if let Some(m) = monitors
+            .item(i)
+            .and_then(|obj| obj.downcast::<gtk4::gdk::Monitor>().ok())
+        {
+            let g = m.geometry();
+            if i == 0 {
+                min_x = g.x();
+                min_y = g.y();
+                max_x = g.x() + g.width();
+                max_y = g.y() + g.height();
+            } else {
+                min_x = min_x.min(g.x());
+                min_y = min_y.min(g.y());
+                max_x = max_x.max(g.x() + g.width());
+                max_y = max_y.max(g.y() + g.height());
+            }
+        }
+    }
+
+    (
+        f64::from(min_x),
+        f64::from(min_y),
+        f64::from((max_x - min_x).max(1)),
+        f64::from((max_y - min_y).max(1)),
+    )
+}
+
+fn get_window_offsets(window: &gtk4::ApplicationWindow) -> (f64, f64) {
+    if let Some(m) = get_active_monitor(Some(window)) {
+        let geom = m.geometry();
+        let offset_x = f64::from((geom.width() - window.width()).max(0));
+        let offset_y = f64::from((geom.height() - window.height()).max(0));
+        (
+            f64::from(geom.x()) + offset_x,
+            f64::from(geom.y()) + offset_y,
+        )
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+fn map_window_to_screen(
+    window: &gtk4::ApplicationWindow,
+    mode: OverlayMode,
+    win_norm_x: f64,
+    win_norm_y: f64,
+) -> (f64, f64) {
+    let Some(monitor) = get_active_monitor(Some(window)) else {
+        return (win_norm_x, win_norm_y);
+    };
+
+    let geom = monitor.geometry();
+    let win_w = f64::from(window.width().max(1));
+    let win_h = f64::from(window.height().max(1));
+
+    let offset_y = f64::from((geom.height() - window.height()).max(0));
+    let offset_x = f64::from((geom.width() - window.width()).max(0));
+
+    let pixel_x = win_norm_x * win_w;
+    let pixel_y = win_norm_y * win_h;
+
+    let screen_x = f64::from(geom.x()) + offset_x + pixel_x;
+    let screen_y = if mode == OverlayMode::TopBar {
+        f64::from(geom.y()) + (offset_y / 2.0).min(16.0)
+    } else {
+        f64::from(geom.y()) + offset_y + pixel_y
+    };
+
+    let (min_x, min_y, desk_w, desk_h) = get_desktop_bounds();
+    (
+        ((screen_x - min_x) / desk_w).clamp(0.0, 1.0),
+        ((screen_y - min_y) / desk_h).clamp(0.0, 1.0),
+    )
+}
+
+fn emit_cursor_move(
+    input_device: &Rc<RefCell<Option<InputDevice>>>,
+    window: &gtk4::ApplicationWindow,
+    mode: OverlayMode,
+    norm_x: f64,
+    norm_y: f64,
+) {
+    let (screen_x, screen_y) = map_window_to_screen(window, mode, norm_x, norm_y);
+    let evt = OverlayEvent::Move {
+        x: screen_x,
+        y: screen_y,
+    };
+    if crate::session::send_event(&evt).unwrap_or(false) {
+        return;
+    }
+    if let Some(ref mut dev) = *input_device.borrow_mut() {
+        let _ = dev.move_to_normalized(screen_x, screen_y);
+    }
+}
+
+fn nudge_reticle(
+    s: &mut State,
+    input_device: &Rc<RefCell<Option<InputDevice>>>,
+    window: &gtk4::ApplicationWindow,
+    dx: f64,
+    dy: f64,
+) {
     let (cur_x, cur_y) = s.point.unwrap_or((
         s.rect.x + s.rect.width / 2.0,
         s.rect.y + s.rect.height / 2.0,
@@ -881,26 +1154,32 @@ fn nudge_reticle(s: &mut State, input_device: &Rc<RefCell<Option<InputDevice>>>,
     let ny = (cur_y + dy).clamp(0.0, 1.0);
     s.point = Some((nx, ny));
 
-    if let Some(ref mut dev) = *input_device.borrow_mut() {
-        let _ = dev.move_to_normalized(nx, ny);
-    }
+    emit_cursor_move(input_device, window, s.mode, nx, ny);
 }
 
-fn emit_click(input_device: &Rc<RefCell<Option<InputDevice>>>, button: MouseButton) {
-    // Try resident session first
+fn emit_click(
+    input_device: &Rc<RefCell<Option<InputDevice>>>,
+    window: &gtk4::ApplicationWindow,
+    mode: OverlayMode,
+    button: MouseButton,
+    point: Option<(f64, f64)>,
+) {
+    let screen_coords = point.map(|(nx, ny)| map_window_to_screen(window, mode, nx, ny));
     let evt = OverlayEvent::Click {
         button: match button {
             MouseButton::Left => "left".to_string(),
             MouseButton::Right => "right".to_string(),
             MouseButton::Middle => "middle".to_string(),
         },
-        normalized: None,
+        normalized: screen_coords.map(|(x, y)| crate::NormalizedPoint { x, y }),
     };
     if crate::session::send_event(&evt).unwrap_or(false) {
         return;
     }
-    // Fallback: local device
     if let Some(ref mut dev) = *input_device.borrow_mut() {
+        if let Some((sx, sy)) = screen_coords {
+            let _ = dev.move_to_normalized(sx, sy);
+        }
         let _ = dev.click(button);
     }
 }
