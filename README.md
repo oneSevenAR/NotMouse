@@ -32,24 +32,20 @@ A fast, keyboard-first pointer navigation and accessibility layer for Linux desk
 
 | Compositor | Support Level | Notes |
 | :--- | :--- | :--- |
-| **GNOME Shell (Wayland / Mutter)** | **Tier 1 (Recommended)** | Fully automated. `install.sh` configures shortcuts, AT-SPI, and workarea offsets out of the box. |
-| **KDE Plasma (Wayland / KWin)** | Supported (Manual setup) | Requires installing `gjs` and `libadwaita-1`. Register shortcut manually in System Settings → Shortcuts. |
-| **Sway / Hyprland / wlroots** | Supported (Manual setup) | Requires installing `gjs`. Add compositor floating window rules (e.g. `for_window [app_id="notmouse"] floating enable`) and keybinding. |
-| **X11 Desktops** | Fallback | Basic grid navigation functions; Wayland is the primary design target. |
+| **GNOME Shell (Wayland / Mutter)** | **Tier 1 (Recommended)** | Fully automated. `install.sh` configures shortcuts, `/dev/uinput` uaccess, and systemd services out of the box. |
+| **KDE Plasma (Wayland / KWin)** | Supported (Manual setup) | Register shortcut manually in System Settings → Shortcuts to run `notmouse overlay`. |
+| **Sway / Hyprland / wlroots** | Supported (Manual setup) | Add compositor floating window rules (e.g. `for_window [app_id="notmouse"] floating enable`) and keybinding. |
+| **X11 Desktops** | Fallback | Fullscreen matrix navigation functions; Wayland is the primary design target. |
 
 ### Prerequisites & Dependencies
 
 1. **Kernel `/dev/uinput` Access**:
    `!mouse` creates a virtual input device to dispatch pointer and keyboard events. `install.sh` automatically checks access and installs a standard uaccess udev rule (`/etc/udev/rules.d/99-notmouse.rules`) via `sudo` if permissions are needed.
-2. **GJS & GTK 4**:
-   - Debian / Ubuntu: `sudo apt install gjs libgtk-4-1 libadwaita-1-0`
-   - Fedora: `sudo dnf install gjs gtk4 libadwaita`
-   - Arch Linux: `sudo pacman -S gjs gtk4 libadwaita`
-3. **Python 3 & AT-SPI Accessibility Typelibs**:
-   Required for interactive UI element scanning (`atspi_scanner.py`):
-   - Debian / Ubuntu: `sudo apt install python3-gi gir1.2-atspi-2.0 at-spi2-core`
-   - Fedora: `sudo dnf install python3-gobject at-spi2-core`
-   - Arch Linux: `sudo pacman -S python-gobject at-spi2-core`
+2. **GTK 4, Cairo & Pango**:
+   Native desktop UI runtime and development headers (only needed when compiling from source):
+   - Debian / Ubuntu: `sudo apt install libgtk-4-1 libcairo2 libpango-1.0-0` (Build: `libgtk-4-dev libcairo2-dev libpango1.0-dev`)
+   - Fedora: `sudo dnf install gtk4 cairo pango` (Build: `gtk4-devel cairo-devel pango-devel`)
+   - Arch Linux: `sudo pacman -S gtk4 cairo pango`
 
 ---
 
@@ -72,7 +68,7 @@ cd NotMouse
 ./install.sh
 ```
 
-`install.sh` performs automated preflight checks, builds the release binary, installs assets to `~/.local/share/notmouse/`, starts the systemd background daemon, and configures the `Super+Shift+M` shortcut in GNOME.
+`install.sh` performs automated preflight checks, builds the release binary, starts the systemd background daemon, and configures the `Super+Shift+M` shortcut in GNOME.
 
 ### Installer Flags
 
@@ -85,8 +81,8 @@ cd NotMouse
 
 Press **`Super+Shift+M`** (or run `notmouse overlay`) to summon the overlay.
 
-1. **Stroke 1**: Press a home-row key (`a s d f j k l g h`) to focus a screen zone (or `t` for Top Bar).
-2. **Stroke 2**: Press a second key to lock onto the target sub-cell.
+1. **Stroke 1**: Press a home-row key (`a s d f j k l g h`) to focus a screen zone. Pointer cursor instantly hops to the zone centroid, waking autohiding player overlays and tooltips.
+2. **Stroke 2**: Press a second key to lock onto the target sub-cell. Pointer cursor snaps to the cell centroid or nearest detected interactive AT-SPI element.
 3. **Action**: Choose an action from below.
 
 ### Keybindings Reference
@@ -94,21 +90,24 @@ Press **`Super+Shift+M`** (or run `notmouse overlay`) to summon the overlay.
 | Key | Mode | Action |
 | :--- | :--- | :--- |
 | `Enter` / `Space` | Any | Left-click target and dismiss overlay |
-| `c` | Grid / Snap | **Click & Stay**: Click target with animated green ripple; keep overlay active |
+| `c` | Grid / Roam | **Click & Stay**: Click target with animated ripple; keep overlay active |
+| `p` | Grid / Roam | **Point & Hover**: Dismiss overlay and leave cursor parked without clicking |
+| `P` | Grid | **Hover & Stay**: Park cursor, conceal overlay for 120 ms to reveal flyout menus, and re-present with refreshed scan |
+| `f` | Grid / Locked | Enter **Free Roam Mode**: 60 Hz kinematic cursor glide |
+| `h` `j` `k` `l` / Arrows | Roam / Locked | Kinematic glide / micro-nudge (Tap: 2.5 px; Hold: quadratic acceleration up to 2400 px/s) |
+| `Shift` (hold) | Roam / Scroll | 2.5× Turbo speed multiplier |
+| `Ctrl` / `Alt` (hold) | Roam | 0.35× Crawl precision dampening |
+| `v` | Grid / Roam | **Live Click & Drag / Text Selection**: Emits `BTN_LEFT DOWN`, shrinks to HUD pill (`680×48`), real-time glide, releases on `v`/`Enter` |
 | `Tab` / `Shift+Tab` | Grid (Locked) | Cycle through nearest interactive AT-SPI candidates in radius |
 | `s` / `w` | Grid | Enter **Instant Scroll Mode** (`s` = down, `w` = up; shrinks overlay to HUD pill) |
 | `j` / `k` | Scroll | Continuous kinetic scroll (Down / Up) |
 | `d` / `u` | Scroll | Half-page scroll (Down / Up) |
 | `h` / `l` | Scroll | Horizontal scroll (Left / Right) |
-| `Shift` (hold) | Scroll | 3× kinetic scroll multiplier |
-| `Tab` | Scroll | Return cleanly from Scroll Mode back to Fullscreen Grid Mode |
-| `r` | Grid / Snap | Right-click target and dismiss overlay |
-| `d` | Grid / Snap | Double-click target and dismiss overlay |
-| `m` | Grid / Snap | Middle-click target and dismiss overlay |
-| `v` | Grid | Two-phase drag & drop (1st press pins source; 2nd press drops target) |
-| `t` | Macro | Top Bar mode (`a` = Activities, `s` = Clock/Calendar, `d` = Quick Settings) |
-| `h` `j` `k` `l` / Arrows | Locked | Pixel micro-nudge cursor (hold `Shift` for 5× step) |
-| `Backspace` | Any | Undo last key stroke / step back one level |
+| `Tab` | Scroll / Roam | Return cleanly from Scroll or Roam back to Fullscreen Grid Mode |
+| `r` | Grid / Roam | Right-click target and dismiss overlay |
+| `d` | Grid / Roam | Double-click target and dismiss overlay |
+| `m` | Grid / Roam | Middle-click target and dismiss overlay |
+| `Backspace` | Grid | Undo last key stroke / step back one level |
 | `Esc` / `q` | Any | Cancel and dismiss overlay |
 
 ---
@@ -134,9 +133,6 @@ cargo build --release --workspace
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt --check
-
-# Test overlay self-tests
-gjs platform/linux/gnome/overlay.js --self-test
 
 # Launch interactive test bench & warm overlay playground
 notmouse playground

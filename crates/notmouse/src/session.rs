@@ -180,7 +180,11 @@ pub fn execute_event(device: &mut InputDevice, event: &OverlayEvent) -> Result<(
             device
                 .move_to_normalized(*x, *y)
                 .map_err(|e| format!("live move failed: {e}"))?;
-            thread::sleep(Duration::from_millis(15));
+        }
+        OverlayEvent::MoveRelative { dx, dy } => {
+            device
+                .move_relative(*dx, *dy)
+                .map_err(|e| format!("live move_relative failed: {e}"))?;
         }
         OverlayEvent::Scroll { dx, dy } => {
             println!("!mouse: live scroll dy={dy}, dx={dx}");

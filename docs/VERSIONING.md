@@ -25,7 +25,6 @@ A formal release consists of:
    - `cargo test --workspace`
    - `cargo clippy --workspace -- -D warnings`
    - `cargo fmt --check`
-   - `gjs platform/linux/gnome/overlay.js --self-test`
 4. **Git Annotated Tag**: An annotated tag matching `v<MAJOR>.<MINOR>.<PATCH>` with release summary notes:
    ```sh
    git tag -a v0.2.1 -m "Release v0.2.1: ..."

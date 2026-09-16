@@ -82,26 +82,10 @@ echo "!mouse installer — $(date)"
 echo
 
 require_cmd cargo
-require_cmd gjs
 require_cmd systemctl
-require_cmd python3
 
 if [[ ! -f "${SERVICE_SRC}" ]]; then
     die "Service file not found at ${SERVICE_SRC} — are you running from the repo root?"
-fi
-
-# Check Python AT-SPI availability
-info "Checking Python AT-SPI accessibility bindings…"
-if python3 -c "import gi; gi.require_version('Atspi', '2.0'); from gi.repository import Atspi" &>/dev/null 2>&1; then
-    ok "Python AT-SPI bindings detected."
-else
-    warn "Python AT-SPI bindings (PyGObject / Atspi 2.0) not found."
-    echo "  Interactive UI element snapping and foreground tracking require AT-SPI packages."
-    echo "  To install:"
-    echo "    Debian / Ubuntu: sudo apt install python3-gi gir1.2-atspi-2.0 at-spi2-core"
-    echo "    Fedora:          sudo dnf install python3-gobject at-spi2-core"
-    echo "    Arch Linux:      sudo pacman -S python-gobject at-spi2-core"
-    echo
 fi
 
 # ── /dev/uinput permissions check ──────────────────────────────────────────────
@@ -158,15 +142,6 @@ if ! echo ":${PATH}:" | grep -q ":${HOME}/.local/bin:"; then
     echo "  Add the following to your ~/.bashrc or ~/.profile:"
     echo '  export PATH="$HOME/.local/bin:$PATH"'
 fi
-
-# ── install overlay scripts ───────────────────────────────────────────────────
-
-info "Installing overlay assets to ${ASSET_DEST}…"
-mkdir -p "${ASSET_DEST}"
-install -m 644 "${REPO_ROOT}/platform/linux/gnome/overlay.js"    "${ASSET_DEST}/overlay.js"
-install -m 644 "${REPO_ROOT}/platform/linux/gnome/test_bench.js" "${ASSET_DEST}/test_bench.js"
-install -m 755 "${REPO_ROOT}/platform/linux/gnome/atspi_scanner.py" "${ASSET_DEST}/atspi_scanner.py"
-ok "Assets installed."
 
 # ── systemd user service ──────────────────────────────────────────────────────
 
@@ -260,7 +235,6 @@ echo
 ok "!mouse installed successfully!"
 echo
 echo "  Binary:   ${BIN_DEST}"
-echo "  Assets:   ${ASSET_DEST}/"
 echo "  Service:  ${SERVICE_DEST} (active)"
 echo "  Shortcut: ${SHORTCUT_KEY} → notmouse overlay"
 echo

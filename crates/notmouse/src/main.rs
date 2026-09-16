@@ -1,11 +1,25 @@
-use std::io::{BufRead, BufReader, Write};
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::too_many_arguments,
+    clippy::items_after_statements,
+    clippy::unnecessary_wraps,
+    clippy::similar_names,
+    clippy::many_single_char_names
+)]
+
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
 use std::time::Duration;
 
+mod atspi;
 mod input;
+mod overlay;
 mod session;
+mod test_bench;
 
 use input::{InputDevice, MouseButton};
 use notmouse_core::{Rect, SpatialMatrix2D};
@@ -22,6 +36,10 @@ pub enum OverlayEvent {
     Move {
         x: f64,
         y: f64,
+    },
+    MoveRelative {
+        dx: i32,
+        dy: i32,
     },
     Scroll {
         dx: i32,
@@ -56,6 +74,13 @@ fn main() -> ExitCode {
             print_demo();
             ExitCode::SUCCESS
         }
+        Some("atspi-test") => match zbus::block_on(atspi::test_scan()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("atspi error: {err}");
+                ExitCode::FAILURE
+            }
+        },
         Some("daemon") => match run_daemon() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -63,13 +88,26 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Some("overlay") => match launch_overlay() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("notmouse: {error}");
-                ExitCode::FAILURE
+        Some("overlay") => {
+            let is_resident = args.any(|a| a == "--resident" || a == "-r" || a == "--background");
+            if is_resident {
+                match overlay::run_overlay(true) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("notmouse: {error}");
+                        ExitCode::FAILURE
+                    }
+                }
+            } else {
+                match launch_overlay() {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("notmouse: {error}");
+                        ExitCode::FAILURE
+                    }
+                }
             }
-        },
+        }
         Some("click") => {
             let x: f64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.5);
             let y: f64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.5);
@@ -138,16 +176,11 @@ fn print_help() {
 
 struct DaemonGuard {
     warm_overlay: Option<std::process::Child>,
-    atspi_monitor: Option<std::process::Child>,
 }
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
         if let Some(mut child) = self.warm_overlay.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        if let Some(mut child) = self.atspi_monitor.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -174,68 +207,31 @@ fn run_daemon() -> Result<(), String> {
         path.display()
     );
 
-    // Pre-warm the warm overlay in the background so cold launch latency is eliminated!
-    let script = overlay_script();
-    let warm_overlay = if script.is_file() {
-        println!("!mouse: pre-warming resident overlay adapter...");
-        Command::new("gjs")
-            .arg(&script)
-            .arg("--background")
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .ok()
-    } else {
-        None
-    };
-
-    // Start background AT-SPI active window monitor so the overlay always knows the foreground app
-    let scanner = scanner_script();
-    let atspi_monitor = if scanner.is_file() {
-        println!("!mouse: starting AT-SPI foreground application tracker...");
-        Command::new("python3")
-            .arg(&scanner)
-            .arg("--monitor")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .ok()
-    } else {
-        None
-    };
+    // Pre-warm the native warm overlay in the background so cold launch latency is eliminated!
+    println!("!mouse: pre-warming native resident overlay adapter...");
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("notmouse"));
+    let warm_overlay = Command::new(&exe)
+        .arg("overlay")
+        .arg("--resident")
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .ok();
 
     println!("!mouse: compositor binding warm and permanent. Press Ctrl+C to terminate.");
 
-    let mut guard = DaemonGuard {
-        warm_overlay,
-        atspi_monitor,
-    };
+    let mut guard = DaemonGuard { warm_overlay };
     loop {
         thread::sleep(Duration::from_secs(5));
         if let Some(ref mut child) = guard.warm_overlay
             && let Ok(Some(_status)) = child.try_wait()
-            && script.is_file()
         {
-            guard.warm_overlay = Command::new("gjs")
-                .arg(&script)
-                .arg("--background")
+            guard.warm_overlay = Command::new(&exe)
+                .arg("overlay")
+                .arg("--resident")
                 .stdin(Stdio::null())
                 .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .ok();
-        }
-        if let Some(ref mut child) = guard.atspi_monitor
-            && let Ok(Some(_status)) = child.try_wait()
-            && scanner.is_file()
-        {
-            guard.atspi_monitor = Command::new("python3")
-                .arg(&scanner)
-                .arg("--monitor")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
                 .stderr(Stdio::inherit())
                 .spawn()
                 .ok();
@@ -318,14 +314,6 @@ fn scroll_at(steps_y: i32, x: Option<f64>, y: Option<f64>) -> Result<(), String>
 }
 
 fn launch_overlay() -> Result<(), String> {
-    let script = overlay_script();
-    if !script.is_file() {
-        return Err(format!(
-            "overlay adapter was not found at {}",
-            script.display()
-        ));
-    }
-
     let start_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros())
@@ -345,238 +333,15 @@ fn launch_overlay() -> Result<(), String> {
         }
     }
 
-    if let Some(mut stream) = session::try_connect() {
-        // Fast path: resident session active! Instant overlay launch with zero device churn!
-        let mut child = Command::new("gjs")
-            .arg(script)
-            .env("NOTMOUSE_START_US", start_us.to_string())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("could not start the GNOME overlay adapter: {error}"))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "could not capture overlay stdout".to_string())?;
-
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let line = line.map_err(|e| format!("reading overlay stdout failed: {e}"))?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if trimmed.starts_with('{') {
-                let _ = writeln!(stream, "{trimmed}");
-                let _ = stream.flush();
-            } else {
-                println!("{trimmed}");
-            }
-        }
-
-        let status = child
-            .wait()
-            .map_err(|err| format!("failed to wait on overlay process: {err}"))?;
-
-        if !status.success() {
-            return Err(format!("the overlay adapter exited with {status}"));
-        }
-
-        return Ok(());
-    }
-
-    // Standalone fallback: no resident daemon running
-    println!(
-        "!mouse: [notice] starting standalone input device (run 'notmouse playground' or 'notmouse daemon' for zero latency)"
-    );
-    let mut device = InputDevice::new().map_err(|err| format!("input device error: {err}"))?;
-
-    let mut child = Command::new("gjs")
-        .arg(script)
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("could not start the GNOME overlay adapter: {error}"))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "could not capture overlay stdout".to_string())?;
-
-    let reader = BufReader::new(stdout);
-    let mut selected_event = None;
-
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("reading overlay stdout failed: {e}"))?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(event) = serde_json::from_str::<OverlayEvent>(trimmed) {
-            if let OverlayEvent::Selected { .. } = event {
-                selected_event = Some(event);
-            } else {
-                let _ = session::execute_event(&mut device, &event);
-            }
-        } else {
-            println!("{trimmed}");
-        }
-    }
-
-    let status = child
-        .wait()
-        .map_err(|err| format!("failed to wait on overlay process: {err}"))?;
-
-    if !status.success() {
-        return Err(format!("the overlay adapter exited with {status}"));
-    }
-
-    if let Some(selected) = selected_event {
-        let _ = session::execute_event(&mut device, &selected);
-    }
-
-    Ok(())
-}
-
-/// Embedded overlay script bytes, compiled into the binary so the binary is
-/// fully self-contained even when installed without source.
-const OVERLAY_JS: &str = include_str!("../../../platform/linux/gnome/overlay.js");
-
-/// Embedded test-bench script bytes.
-const TEST_BENCH_JS: &str = include_str!("../../../platform/linux/gnome/test_bench.js");
-
-/// Embedded AT-SPI accessibility scanner helper script bytes.
-const ATSPI_SCANNER_PY: &str = include_str!("../../../platform/linux/gnome/atspi_scanner.py");
-
-/// Return the user-level data directory for !mouse scripts:
-/// `$XDG_DATA_HOME/notmouse` or `~/.local/share/notmouse`.
-fn notmouse_user_data_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs_next::home_dir().map(|h| h.join(".local/share")))?;
-    Some(base.join("notmouse"))
-}
-
-/// Search for a script in the standard installation hierarchy.
-///
-/// Order:
-/// 1. `$env_var` override (environment variable).
-/// 2. Executable sibling directory: `<exe_dir>/<name>`.
-/// 3. User data dir: `$XDG_DATA_HOME/notmouse/<name>`.
-/// 4. System data dirs: `/usr/local/share/notmouse/<name>`, `/usr/share/notmouse/<name>`.
-/// 5. Development source fallback: `CARGO_MANIFEST_DIR/../../platform/linux/gnome/<name>`.
-///
-/// If no file is found but `embedded` content is provided, it is written to the
-/// user data dir and that path is returned so subsequent calls hit option 3.
-fn resolve_script(name: &str, env_var: &str, embedded: &str) -> PathBuf {
-    // 1. Environment-variable override.
-    if let Some(val) = std::env::var_os(env_var) {
-        return PathBuf::from(val);
-    }
-
-    // 2. Sibling of the running executable.
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(exe_dir) = exe.parent()
-    {
-        let candidate = exe_dir.join(name);
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-
-    // 3. User XDG data directory.
-    if let Some(user_dir) = notmouse_user_data_dir() {
-        let candidate = user_dir.join(name);
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-
-    // 4. System-wide data directories.
-    for prefix in &["/usr/local/share", "/usr/share"] {
-        let candidate = PathBuf::from(prefix).join("notmouse").join(name);
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-
-    // 5. Development source-tree fallback (works when running from `cargo run`).
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../platform/linux/gnome")
-        .join(name);
-    if dev_path.is_file() {
-        return dev_path;
-    }
-
-    // Nothing found — extract the embedded script to the user data dir so the
-    // binary is self-contained for users who installed via `cargo install` or a
-    // pre-built binary without copying the asset files manually.
-    if let Some(user_dir) = notmouse_user_data_dir()
-        && std::fs::create_dir_all(&user_dir).is_ok()
-    {
-        let dest = user_dir.join(name);
-        if std::fs::write(&dest, embedded).is_ok() {
-            return dest;
-        }
-    }
-
-    // Last resort: return the dev path even if it doesn't exist; the caller
-    // will emit a clear "not found" error message with the path.
-    dev_path
-}
-
-fn scanner_script() -> PathBuf {
-    resolve_script(
-        "atspi_scanner.py",
-        "NOTMOUSE_ATSPI_SCANNER",
-        ATSPI_SCANNER_PY,
-    )
-}
-
-fn overlay_script() -> PathBuf {
-    // Ensure helper scanner is also available in target directory if needed
-    let _ = scanner_script();
-    resolve_script("overlay.js", "NOTMOUSE_OVERLAY_SCRIPT", OVERLAY_JS)
-}
-
-fn test_bench_script() -> PathBuf {
-    resolve_script("test_bench.js", "NOTMOUSE_TEST_BENCH_SCRIPT", TEST_BENCH_JS)
+    // Direct native GTK 4 overlay launch! Zero external scripts!
+    overlay::run_overlay(false)
 }
 
 fn launch_test_bench() -> Result<(), String> {
-    let script = test_bench_script();
-    if !script.is_file() {
-        return Err(format!(
-            "test bench script was not found at {}",
-            script.display()
-        ));
-    }
-
-    let mut cmd = Command::new("gjs");
-    cmd.arg(script);
-    if let Ok(exe) = std::env::current_exe() {
-        cmd.env("NOTMOUSE_BIN", exe);
-    }
-
-    let status = cmd
-        .status()
-        .map_err(|error| format!("could not start the test bench: {error}"))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("the test bench exited with {status}"))
-    }
+    test_bench::run_test_bench()
 }
 
 fn launch_playground() -> Result<(), String> {
-    let script = test_bench_script();
-    if !script.is_file() {
-        return Err(format!(
-            "test bench script was not found at {}",
-            script.display()
-        ));
-    }
-
     // Keep persistent resident session warm for entire playground lifetime
     let _server_guard = if session::try_connect().is_none() {
         println!("!mouse: initializing persistent virtual input device (warm session)...");
@@ -596,13 +361,9 @@ fn launch_playground() -> Result<(), String> {
     };
 
     println!("!mouse: launching interactive test bench...");
-    let mut cmd = Command::new("gjs");
-    cmd.arg(script);
-    if let Ok(exe) = std::env::current_exe() {
-        cmd.env("NOTMOUSE_BIN", exe);
-    }
-
-    let mut bench_child = cmd
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("notmouse"));
+    let mut bench_child = Command::new(&exe)
+        .arg("test-bench")
         .spawn()
         .map_err(|error| format!("could not spawn test bench: {error}"))?;
 
@@ -654,33 +415,9 @@ fn print_demo() {
                 "  [ {:^4} ]    [ {:^4} ]    [ {:^4} ]",
                 row[0].hint.to_uppercase(),
                 row[1].hint.to_uppercase(),
-                row[2].hint.to_uppercase()
+                row[2].hint.to_uppercase(),
             );
         }
     }
     println!("\nTyping 'k' resolves to 'DK' -> normalized coordinates (X, Y) and fires click.");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_input_device_dev_nodes() {
-        let mut dev = match InputDevice::new() {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("skipping test_input_device_dev_nodes: /dev/uinput not accessible ({e})");
-                return;
-            }
-        };
-        // test dev node discovery
-        let path = dev.device.get_syspath();
-        println!("Syspath: {path:?}");
-        if let Ok(mut nodes) = dev.device.enumerate_dev_nodes_blocking() {
-            while let Some(Ok(node)) = nodes.next() {
-                println!("Node: {node:?}");
-            }
-        }
-    }
 }
