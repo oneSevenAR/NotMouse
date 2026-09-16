@@ -119,14 +119,17 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
                         # Shallow search for focused descendant (< 6 levels, max 20 children)
                         focused_found = []
                         def check_focus(node, depth=0):
-                            if focused_found or depth > 5:
+                            if focused_found or depth > 5 or not node:
                                 return
-                            nss = node.get_state_set()
-                            if nss and nss.contains(Atspi.StateType.FOCUSED):
-                                focused_found.append(True)
-                                return
-                            for c in range(min(node.get_child_count(), 20)):
-                                check_focus(node.get_child_at_index(c), depth + 1)
+                            try:
+                                nss = node.get_state_set()
+                                if nss and nss.contains(Atspi.StateType.FOCUSED):
+                                    focused_found.append(True)
+                                    return
+                                for c in range(min(node.get_child_count(), 20)):
+                                    check_focus(node.get_child_at_index(c), depth + 1)
+                            except Exception:
+                                pass
 
                         check_focus(frame)
                         if focused_found:
@@ -144,7 +147,6 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
                         score += 100
                     if contains_target:
                         score += 50
-                    score += i
 
                     candidate_apps.append({
                         'name': name,
@@ -156,7 +158,9 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
                 continue
 
         if candidate_apps:
-            candidate_apps.sort(key=lambda c: c['score'], reverse=True)
+            # Sort by score first, then number of visible frames.
+            # Never bias based on arbitrary desktop index array order!
+            candidate_apps.sort(key=lambda c: (c['score'], len(c['frames'])), reverse=True)
             chosen = candidate_apps[0]
             active_app_name = chosen['name']
             active_app_pid = chosen['pid']
@@ -252,14 +256,133 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
     return elements
 
 
+def run_monitor():
+    """
+    Persistent background monitor that tracks the active window in real-time.
+    Writes the active application PID to $XDG_RUNTIME_DIR/notmouse-active-pid.
+    Never overwrites the PID when !mouse overlay (gjs) or gnome-shell maps.
+    """
+    import os
+    import signal
+    try:
+        import gi
+        gi.require_version('Atspi', '2.0')
+        from gi.repository import Atspi
+    except Exception as e:
+        sys.stderr.write(f"!mouse atspi_monitor error: {e}\n")
+        return
+
+    try:
+        Atspi.init()
+        desktop = Atspi.get_desktop(0)
+    except Exception as e:
+        sys.stderr.write(f"!mouse atspi_monitor desktop error: {e}\n")
+        return
+
+    runtime_dir = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
+    pid_file = os.path.join(runtime_dir, 'notmouse-active-pid')
+
+    IGNORED_APPS = {
+        'gjs', 'ibus-extension-gtk3', 'evolution-alarm-notify',
+        'update-notifier', 'gpaste-daemon', 'xdg-desktop-portal-gtk',
+        'gnome-shell',
+    }
+
+    def write_pid(pid):
+        try:
+            tmp = pid_file + '.tmp'
+            with open(tmp, 'w') as f:
+                f.write(f"{pid}\n")
+            os.replace(tmp, pid_file)
+        except Exception:
+            pass
+
+    # Find initial active window PID
+    for i in range(desktop.get_child_count()):
+        try:
+            app = desktop.get_child_at_index(i)
+            if not app:
+                continue
+            name = app.get_name()
+            if not name or name in IGNORED_APPS:
+                continue
+            for j in range(app.get_child_count()):
+                frame = app.get_child_at_index(j)
+                if not frame:
+                    continue
+                ss = frame.get_state_set()
+                if ss and ss.contains(Atspi.StateType.ACTIVE):
+                    pid = app.get_process_id()
+                    if pid > 0:
+                        write_pid(pid)
+                    break
+        except Exception:
+            continue
+
+    def on_event(event):
+        try:
+            source = event.source
+            if not source:
+                return
+            if event.type.startswith('object:state-changed:active') and getattr(event, 'detail1', 1) != 1:
+                return
+            app = source
+            while app and app.get_role_name() != 'application':
+                app = app.get_parent()
+            if not app:
+                return
+            name = app.get_name()
+            pid = app.get_process_id()
+            if not name or name in IGNORED_APPS or pid <= 0:
+                return
+            write_pid(pid)
+        except Exception:
+            pass
+
+    listener = Atspi.EventListener.new(on_event)
+    listener.register('window:activate')
+    listener.register('object:state-changed:active')
+
+    def handle_signal():
+        try:
+            Atspi.event_quit()
+        except Exception:
+            pass
+        try:
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
+        except Exception:
+            pass
+        return False
+
+    try:
+        try:
+            from gi.repository import GLib, GLibUnix
+            GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, handle_signal)
+            GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, handle_signal)
+        except Exception:
+            from gi.repository import GLib
+            GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, handle_signal)
+            GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, handle_signal)
+    except Exception:
+        signal.signal(signal.SIGTERM, lambda *_: handle_signal())
+        signal.signal(signal.SIGINT, lambda *_: handle_signal())
+
+    Atspi.event_main()
+
+
 if __name__ == '__main__':
+    args = sys.argv[1:]
+    if '--monitor' in args:
+        run_monitor()
+        sys.exit(0)
+
     target_pid = None
     min_x = None
     max_x = None
     min_y = None
     max_y = None
 
-    args = sys.argv[1:]
     i = 0
     pos_args = []
     while i < len(args):

@@ -42,8 +42,28 @@ function getScannerScriptPath() {
     return '/usr/local/share/notmouse/atspi_scanner.py';
 }
 
+function readActivePidFromFile() {
+    try {
+        const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR') || GLib.get_tmp_dir();
+        const pidPath = `${runtimeDir}/notmouse-active-pid`;
+        if (GLib.file_test(pidPath, GLib.FileTest.IS_REGULAR)) {
+            const [ok, contents] = GLib.file_get_contents(pidPath);
+            if (ok) {
+                const text = (typeof contents === 'string')
+                    ? contents.trim()
+                    : new TextDecoder('utf-8').decode(contents).trim();
+                const pid = parseInt(text, 10);
+                if (pid > 0) {
+                    return pid;
+                }
+            }
+        }
+    } catch (_e) {}
+    return null;
+}
+
 // Asynchronously fetch elements in background without blocking the UI or delaying window presentation.
-function fetchElementsAsync(callback) {
+function fetchElementsAsync(callback, targetPid = null) {
     if (_scanInProgress) {
         return;
     }
@@ -57,6 +77,10 @@ function fetchElementsAsync(callback) {
     }
 
     const argv = ['python3', script];
+    const pidToScan = targetPid || readActivePidFromFile();
+    if (pidToScan) {
+        argv.push('--pid', pidToScan.toString());
+    }
 
     try {
         const [success, pid, stdin, stdout, stderr] = GLib.spawn_async_with_pipes(
@@ -140,10 +164,36 @@ function snapToNearestElement(state, window, drawingArea) {
     const cellMinY = state.rect.y * winH - CELL_TOLERANCE_PX;
     const cellMaxY = (state.rect.y + state.rect.height) * winH + CELL_TOLERANCE_PX;
 
-    let inCell = source.filter(e =>
-        e.cx >= cellMinX && e.cx <= cellMaxX &&
-        e.cy >= cellMinY && e.cy <= cellMaxY
-    );
+    let inCell = [];
+    for (const e of source) {
+        const centerInCell = (
+            e.cx >= cellMinX && e.cx <= cellMaxX &&
+            e.cy >= cellMinY && e.cy <= cellMaxY
+        );
+        const intersectsCell = (
+            e.x <= cellMaxX && (e.x + e.w) >= cellMinX &&
+            e.y <= cellMaxY && (e.y + e.h) >= cellMinY
+        );
+
+        if (centerInCell) {
+            inCell.push({ ...e });
+        } else if (intersectsCell) {
+            // For wide elements spanning across cells (e.g. tabs), compute the center
+            // of the portion visible within this micro-cell so the snap coordinate stays
+            // strictly inside the cell boundary without teleporting across the screen.
+            const interLeft = Math.max(e.x, cellMinX);
+            const interRight = Math.min(e.x + e.w, cellMaxX);
+            const interTop = Math.max(e.y, cellMinY);
+            const interBottom = Math.min(e.y + e.h, cellMaxY);
+            const cellCx = (interLeft + interRight) / 2.0;
+            const cellCy = (interTop + interBottom) / 2.0;
+            inCell.push({
+                ...e,
+                cx: cellCx,
+                cy: cellCy,
+            });
+        }
+    }
 
     if (inCell.length === 0) {
         state.snapCandidates = [];
@@ -885,11 +935,15 @@ function resetOverlayState(state) {
     state.snapCandidates = [];
     state.snapIndex = -1;
     state.topBarTarget = null;
+    state.targetPid = null;
 }
 
-function showOverlay(state, window, drawingArea, startUs = null) {
+function showOverlay(state, window, drawingArea, startUs = null, targetPid = null) {
     _lastTriggerStartUs = startUs || GLib.get_real_time();
     resetOverlayState(state);
+    if (targetPid) {
+        state.targetPid = targetPid;
+    }
 
     const display = Gdk.Display.get_default();
     if (display) {
@@ -932,7 +986,7 @@ function showOverlay(state, window, drawingArea, startUs = null) {
                 snapToNearestElement(state, window, drawingArea);
             }
         }
-    });
+    }, state.targetPid);
 }
 
 function setupOverlaySocket(state, window, drawingArea, application) {
@@ -975,7 +1029,7 @@ function setupOverlaySocket(state, window, drawingArea, application) {
                 if (line) {
                     const data = JSON.parse(line);
                     if (data.action === 'show') {
-                        showOverlay(state, window, drawingArea, data.start_us || null);
+                        showOverlay(state, window, drawingArea, data.start_us || null, data.target_pid || null);
                     } else if (data.action === 'hide') {
                         dismissOverlay(window, application);
                     } else if (data.action === 'quit') {
@@ -1017,6 +1071,7 @@ function runOverlay() {
             nearbyElements: [],
             snapCandidates: [],  // all elements within cycling radius, sorted by distance
             snapIndex: -1,       // index into snapCandidates of current snap target
+            targetPid: null,
         };
         const window = new Gtk.ApplicationWindow({
             application,
@@ -1131,7 +1186,7 @@ function runOverlay() {
                                         snapToNearestElement(state, window, drawingArea);
                                     }
                                 }
-                            });
+                            }, state.targetPid);
                             return GLib.SOURCE_REMOVE;
                         });
 
@@ -1298,7 +1353,7 @@ function runOverlay() {
                     if (state.path.length === 0 && state.lastClickTime > 0) {
                         _activeScanId++;
                         _cachedElements = [];
-                        fetchElementsAsync(null);
+                        fetchElementsAsync(null, state.targetPid);
                     }
 
                     drawingArea.queue_draw();
@@ -1369,7 +1424,7 @@ function runOverlay() {
                                         snapToNearestElement(state, window, drawingArea);
                                     }
                                 }
-                            });
+                            }, state.targetPid);
                             return GLib.SOURCE_REMOVE;
                         });
 
@@ -1396,11 +1451,10 @@ function runOverlay() {
 
                 // Tab / Shift+Tab: cycle through snappable elements near current point
                 if (keyval === Gdk.KEY_Tab || keyval === Gdk.KEY_ISO_Left_Tab) {
-                    // If no candidates yet or cache expired, re-evaluate candidates
-                    if (state.snapCandidates.length === 0 || !getValidCachedElements()) {
+                    if (!state.snapCandidates || state.snapCandidates.length === 0) {
                         snapToNearestElement(state, window, drawingArea);
                     }
-                    if (state.snapCandidates.length > 0) {
+                    if (state.snapCandidates && state.snapCandidates.length > 0) {
                         cycleSnap(state, window, drawingArea, isShift ? -1 : 1);
                     }
                     return true;
