@@ -1,32 +1,44 @@
-# Versioning and releases
+# Versioning and Releases
 
-`!mouse` uses Semantic Versioning: `MAJOR.MINOR.PATCH`.
+`!mouse` follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
-During the experimental `0.x` period:
+---
 
-- minor versions may contain breaking changes;
-- patch versions contain compatible fixes and small improvements;
-- prerelease suffixes such as `-alpha.1` mark builds that are not ready for
-  everyday use.
+## Versioning Policy
 
-The version in the root Cargo workspace is the source of truth. A release is:
+During the `0.x` developmental phase:
+- **Patch releases** (`0.x.Y`): Compatible bug fixes, platform installer enhancements, and minor performance improvements.
+- **Minor releases** (`0.X.0`): New interactive modes, substantial architectural capabilities (e.g. resident daemon architecture, AT-SPI element snapping, instant kinetic scrolling), or protocol modifications.
+- **Major releases** (`1.0.0`+): Long-term stable API, mature multi-compositor support, and permanent config schema.
 
-1. a reviewed update to the workspace version and changelog;
-2. a signed Git tag named `v<version>`;
-3. a GitHub Release created from that tag;
-4. packages produced from the exact tagged commit.
+---
 
-Early releases will provide a portable binary archive. Once the daemon and
-desktop integration are stable enough to install, releases will also provide:
+## Source of Truth & Release Process
 
-- a Debian package for Ubuntu and Debian-based systems;
-- an RPM package for Fedora and related systems;
-- checksums for every downloadable artifact.
+The version declared in the root [`Cargo.toml`](../Cargo.toml) (`workspace.package.version`) is the canonical source of truth for the entire workspace.
 
-Distribution-specific repositories, Flatpak, or AppImage can be added after the
-Wayland permission and background-service model has settled. Package versions
-must always match the Git tag and embedded application version.
+A formal release consists of:
 
-Normal commits to `main` are development builds and do not need unique release
-versions. When useful, they can identify themselves with the base version plus
-the short Git commit, for example `0.1.0-alpha.1+7dcb1ef`.
+1. **Workspace Version Bump**: Updating `Cargo.toml` and syncing `Cargo.lock` via `cargo check --workspace`.
+2. **Changelog**: Documenting all additions, fixes, and breaking changes in [`CHANGELOG.md`](../CHANGELOG.md) adhering to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+3. **Automated Quality Checks**:
+   - `cargo test --workspace`
+   - `cargo clippy --workspace -- -D warnings`
+   - `cargo fmt --check`
+   - `gjs platform/linux/gnome/overlay.js --self-test`
+4. **Git Annotated Tag**: An annotated tag matching `v<MAJOR>.<MINOR>.<PATCH>` with release summary notes:
+   ```sh
+   git tag -a v0.2.1 -m "Release v0.2.1: ..."
+   git push origin main --tags
+   ```
+5. **GitHub Release**: Created from the pushed tag with changelog release notes.
+
+---
+
+## Packaging Roadmap
+
+- **One-Line Installer (`install.sh`)**: The primary installation method for Linux users, building from source, configuring systemd user services, udev rules for `/dev/uinput`, and desktop accessibility.
+- **Binary Releases & Distro Packaging**:
+  - Native `.deb` (Ubuntu / Debian) and `.rpm` (Fedora) packages with automated systemd unit registration.
+  - Arch User Repository (`PKGBUILD` for AUR).
+  - Standalone release tarballs containing pre-built release binaries and desktop assets.
