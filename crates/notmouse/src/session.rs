@@ -25,6 +25,25 @@ pub fn overlay_socket_path() -> PathBuf {
         .join("notmouse-overlay.sock")
 }
 
+/// Returns the path to the active window PID file monitored by the AT-SPI tracker.
+#[must_use]
+pub fn active_pid_path() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("notmouse-active-pid")
+}
+
+/// Reads the currently active target application PID if available.
+#[must_use]
+pub fn read_active_pid() -> Option<u32> {
+    let path = active_pid_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        content.trim().parse::<u32>().ok()
+    } else {
+        None
+    }
+}
+
 /// Attempts to connect to an existing resident session daemon.
 ///
 /// If a stale socket file exists from an unclean shutdown, it is automatically removed.
@@ -164,6 +183,7 @@ pub fn execute_event(device: &mut InputDevice, event: &OverlayEvent) -> Result<(
             thread::sleep(Duration::from_millis(15));
         }
         OverlayEvent::Scroll { dx, dy } => {
+            println!("!mouse: live scroll dy={dy}, dx={dx}");
             device
                 .scroll(*dy, *dx)
                 .map_err(|e| format!("live scroll failed: {e}"))?;
@@ -300,5 +320,18 @@ mod tests {
         drop(server);
         thread::sleep(Duration::from_millis(50));
         assert!(!test_sock.exists());
+    }
+
+    #[test]
+    fn test_active_pid_path_and_read() {
+        let p = active_pid_path();
+        assert!(p.ends_with("notmouse-active-pid"));
+
+        let test_file = std::env::temp_dir().join(format!("test_pid_{}", std::process::id()));
+        let _ = std::fs::write(&test_file, "12345\n");
+        let content = std::fs::read_to_string(&test_file).ok();
+        let parsed = content.and_then(|c| c.trim().parse::<u32>().ok());
+        assert_eq!(parsed, Some(12345));
+        let _ = std::fs::remove_file(&test_file);
     }
 }

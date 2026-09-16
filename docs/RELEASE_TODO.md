@@ -99,7 +99,48 @@
 
 ## 5. Release Tagging
 
-- [x] **Git Tag & Release Creation**
+- [x] **Git Tag & Release Creation (v0.1.0)**
   - Create annotated git tag: `git tag -a v0.1.0 -m "Release v0.1.0: Keyboard-first interaction layer for Linux"`
   - Push tag: `git push origin v0.1.0`
   - Generate GitHub Release with changelog notes and binary artifacts.
+
+---
+
+## 6. Active Bugs & Next Milestones (v0.2.0)
+
+- [x] **Release v0.2.0 Milestone Tagging**
+  - Consolidate merged features since v0.1.0 (PR #5, PR #6, PR #7, PR #9, PR #10):
+    - Sub-25ms resident warm overlay architecture (`notmouse-overlay.sock`, async scanner)
+    - Strict cell candidate bounds for snapping
+    - Click & Stay (`c`) target preservation + Mutter remap + neon green ripple animation
+    - Reading order sort with row banding
+    - Curated link support (heuristics for nav links / tabs with amber badges)
+    - Instant kinetic scroll mode activation via compact HUD unmaximize and target collision avoidance
+    - GTK 4 / Nautilus table & list cell recursive inner label centroid refinement
+    - Background AT-SPI foreground application tracking via `--monitor`
+    - Automated desktop accessibility configuration in `install.sh`
+  - Bump workspace version to `0.2.0` in `Cargo.toml`.
+  - Update `CHANGELOG.md` with `## [0.2.0]` section.
+  - Tag and push `v0.2.0` on GitHub.
+
+- [x] **Scroll Mode Wayland Pointer Focus on Window Switch ([Issue #4](https://github.com/oneSevenAR/NotMouse/issues/4))**
+  - **Symptom:** When Alt+Tabbing to a window (e.g. Vivaldi on Reddit) and entering scroll mode (`s`), scroll inputs either take time to kick in or fail entirely until the user manually clicks somewhere on the page.
+  - **Root Cause:** In GNOME Mutter on Wayland, virtual uinput scroll events (`REL_WHEEL`) are only dispatched to the surface that currently holds Wayland pointer focus. Moving the virtual cursor via `ABS_X`/`ABS_Y` under an empty input region does not force Mutter to transfer pointer focus to an unfocused window without relative motion or pointer interaction.
+  - **Fix Implemented:**
+    1. Added `REL_X` and `REL_Y` axes to `VirtualDevice` in `crates/notmouse/src/input.rs`.
+    2. Implemented zero-net-delta relative twitch (`+1` then `-1` px) in `move_to_normalized` and `poke_pointer_focus`. Relative events are never deduplicated by kernel `evdev`, forcing Mutter to re-evaluate actor pick and dispatch `wl_pointer.enter`.
+    3. In `overlay.js`, added `ensureScrollFocused(state, window)` to guarantee cursor position and pointer focus are committed before any scroll keystroke (`j`, `k`, `h`, `l`, etc.) is dispatched.
+
+- [x] **AT-SPI Active Window Focus Inversion & Candidate Selection ([Issue #11](https://github.com/oneSevenAR/NotMouse/issues/11))**
+  - **Symptom:** On the `ptyxis` terminal window, pressing `Super+Shift+M` and typing `a->a` targets LibreWolf's browser tab instead of Ptyxis's "New Terminal" button.
+  - **Root Cause:**
+    1. **Focus Inversion Timing:** `showOverlay()` calls `window.set_visible(true)` and `window.present()` *before* spawning `atspi_scanner.py`. The `!mouse` overlay immediately gains compositor focus, causing Ptyxis (GTK 4) and other windows to drop their `Atspi.StateType.ACTIVE` and `FOCUSED` flags before the scanner inspects the desktop.
+    2. **Degenerated Scoring:** When no underlying app has active/focused flags, the scoring engine fell back to the AT-SPI desktop array index (`score = i`). LibreWolf (index 8) outranks Ptyxis (index 7), causing LibreWolf to be selected as the "active" application even though Ptyxis was the active foreground window before summon.
+    3. **Null Accessible Node Exception:** In `check_focus()`, `node.get_child_at_index(c)` returned `None` in Vivaldi, causing an unhandled `AttributeError: 'NoneType' object has no attribute 'get_state_set'` that skipped Vivaldi entirely.
+  - **Fix Implemented:**
+    1. **Active PID Tracking in Resident Daemon:** `notmouse daemon` now launches and supervises `atspi_scanner.py --monitor` in the background. It listens to `window:activate` and `object:state-changed:active` events via AT-SPI, recording the foreground PID to `$XDG_RUNTIME_DIR/notmouse-active-pid` while ignoring overlay mappings (`gjs`, `gnome-shell`).
+    2. **Target PID Forwarding:** When `notmouse overlay` is triggered, it reads the active PID and includes `"target_pid": <pid>` in the socket message to `overlay.js`. `overlay.js` passes `--pid <target_pid>` to `atspi_scanner.py`, directly scanning the exact foreground window with zero focus ambiguity.
+    3. **Null-Safe Traversal:** Added `if not node: return` guard and exception handling to `check_focus` in `atspi_scanner.py`, resolving crashes on Chromium/Vivaldi placeholder nodes.
+    4. **Unbiased Fallback Scoring:** Removed arbitrary `score += i` desktop index tie-breaker in `atspi_scanner.py`, preventing background apps from stealing priority.
+
+

@@ -136,15 +136,23 @@ fn print_help() {
     );
 }
 
-struct OverlayGuard(Option<std::process::Child>);
+struct DaemonGuard {
+    warm_overlay: Option<std::process::Child>,
+    atspi_monitor: Option<std::process::Child>,
+}
 
-impl Drop for OverlayGuard {
+impl Drop for DaemonGuard {
     fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
+        if let Some(mut child) = self.warm_overlay.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(mut child) = self.atspi_monitor.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
         let _ = std::fs::remove_file(session::overlay_socket_path());
+        let _ = std::fs::remove_file(session::active_pid_path());
     }
 }
 
@@ -182,20 +190,52 @@ fn run_daemon() -> Result<(), String> {
         None
     };
 
+    // Start background AT-SPI active window monitor so the overlay always knows the foreground app
+    let scanner = scanner_script();
+    let atspi_monitor = if scanner.is_file() {
+        println!("!mouse: starting AT-SPI foreground application tracker...");
+        Command::new("python3")
+            .arg(&scanner)
+            .arg("--monitor")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .ok()
+    } else {
+        None
+    };
+
     println!("!mouse: compositor binding warm and permanent. Press Ctrl+C to terminate.");
 
-    let mut guard = OverlayGuard(warm_overlay);
+    let mut guard = DaemonGuard {
+        warm_overlay,
+        atspi_monitor,
+    };
     loop {
         thread::sleep(Duration::from_secs(5));
-        if let Some(ref mut child) = guard.0
+        if let Some(ref mut child) = guard.warm_overlay
             && let Ok(Some(_status)) = child.try_wait()
             && script.is_file()
         {
-            guard.0 = Command::new("gjs")
+            guard.warm_overlay = Command::new("gjs")
                 .arg(&script)
                 .arg("--background")
                 .stdin(Stdio::null())
                 .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .ok();
+        }
+        if let Some(ref mut child) = guard.atspi_monitor
+            && let Ok(Some(_status)) = child.try_wait()
+            && scanner.is_file()
+        {
+            guard.atspi_monitor = Command::new("python3")
+                .arg(&scanner)
+                .arg("--monitor")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
                 .stderr(Stdio::inherit())
                 .spawn()
                 .ok();
@@ -296,7 +336,10 @@ fn launch_overlay() -> Result<(), String> {
     if overlay_sock.exists()
         && let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&overlay_sock)
     {
-        let msg = format!("{{\"action\":\"show\",\"start_us\":{start_us}}}\n");
+        let target_pid_part = session::read_active_pid()
+            .map(|pid| format!(",\"target_pid\":{pid}"))
+            .unwrap_or_default();
+        let msg = format!("{{\"action\":\"show\",\"start_us\":{start_us}{target_pid_part}}}\n");
         if stream.write_all(msg.as_bytes()).is_ok() && stream.flush().is_ok() {
             return Ok(());
         }
@@ -481,13 +524,17 @@ fn resolve_script(name: &str, env_var: &str, embedded: &str) -> PathBuf {
     dev_path
 }
 
-fn overlay_script() -> PathBuf {
-    // Ensure helper scanner is also available in target directory if needed
-    let _ = resolve_script(
+fn scanner_script() -> PathBuf {
+    resolve_script(
         "atspi_scanner.py",
         "NOTMOUSE_ATSPI_SCANNER",
         ATSPI_SCANNER_PY,
-    );
+    )
+}
+
+fn overlay_script() -> PathBuf {
+    // Ensure helper scanner is also available in target directory if needed
+    let _ = scanner_script();
     resolve_script("overlay.js", "NOTMOUSE_OVERLAY_SCRIPT", OVERLAY_JS)
 }
 

@@ -6,13 +6,6 @@ imports.gi.versions.PangoCairo = '1.0';
 const { Gdk, Gio, GLib, Gtk, Pango, PangoCairo } = imports.gi;
 const Cairo = imports.cairo;
 
-let Atspi = null;
-try {
-    imports.gi.versions.Atspi = '2.0';
-    Atspi = imports.gi.Atspi;
-} catch (_e) {
-    Atspi = null;
-}
 
 const HINTS = ['a', 's', 'd', 'f', 'j', 'k', 'l', 'g', 'h'];
 const GRID_SIZE = 3;
@@ -34,8 +27,8 @@ function childRect(parent, index) {
 
 // ── AT-SPI Accessibility Semantic Target Scanner & Cache ───────────────────
 let _cachedElements = [];
-let _cacheTimestamp = 0;
-const CACHE_TTL_MS = 3000;
+let _activeScanId = 0;
+let _scanInProgress = false;
 
 function getScannerScriptPath() {
     const devPath = GLib.build_filenamev([GLib.path_get_dirname(new Error().fileName || ''), 'atspi_scanner.py']);
@@ -49,36 +42,19 @@ function getScannerScriptPath() {
     return '/usr/local/share/notmouse/atspi_scanner.py';
 }
 
-// Quickly snapshot the PID of the active/focused desktop window before presenting the overlay (<50ms).
-function detectActiveProcessPid() {
+function readActivePidFromFile() {
     try {
-        if (!Atspi) {
-            return null;
-        }
-        Atspi.init();
-        const desktop = Atspi.get_desktop(0);
-        if (!desktop) {
-            return null;
-        }
-        const count = desktop.get_child_count();
-        for (let i = 0; i < count; i++) {
-            const app = desktop.get_child_at_index(i);
-            if (!app) {
-                continue;
-            }
-            const name = app.get_name();
-            if (name === 'gjs' || name === 'ibus-extension-gtk3' || name === 'evolution-alarm-notify') {
-                continue;
-            }
-            const fc = app.get_child_count();
-            for (let j = 0; j < fc; j++) {
-                const frame = app.get_child_at_index(j);
-                if (!frame) {
-                    continue;
-                }
-                const ss = frame.get_state_set();
-                if (ss && ss.contains(Atspi.StateType.ACTIVE)) {
-                    return app.get_process_id();
+        const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR') || GLib.get_tmp_dir();
+        const pidPath = `${runtimeDir}/notmouse-active-pid`;
+        if (GLib.file_test(pidPath, GLib.FileTest.IS_REGULAR)) {
+            const [ok, contents] = GLib.file_get_contents(pidPath);
+            if (ok) {
+                const text = (typeof contents === 'string')
+                    ? contents.trim()
+                    : new TextDecoder('utf-8').decode(contents).trim();
+                const pid = parseInt(text, 10);
+                if (pid > 0) {
+                    return pid;
                 }
             }
         }
@@ -87,16 +63,23 @@ function detectActiveProcessPid() {
 }
 
 // Asynchronously fetch elements in background without blocking the UI or delaying window presentation.
-function fetchElementsAsync(options, callback) {
+function fetchElementsAsync(callback, targetPid = null) {
+    if (_scanInProgress) {
+        return;
+    }
+    _scanInProgress = true;
+    const scanId = ++_activeScanId;
     const script = getScannerScriptPath();
     if (!GLib.file_test(script, GLib.FileTest.IS_REGULAR)) {
-        callback([]);
+        _scanInProgress = false;
+        if (callback) callback([]);
         return;
     }
 
     const argv = ['python3', script];
-    if (options && options.pid) {
-        argv.push('--pid', String(options.pid));
+    const pidToScan = targetPid || readActivePidFromFile();
+    if (pidToScan) {
+        argv.push('--pid', pidToScan.toString());
     }
 
     try {
@@ -108,7 +91,8 @@ function fetchElementsAsync(options, callback) {
             null
         );
         if (!success) {
-            callback([]);
+            _scanInProgress = false;
+            if (callback) callback([]);
             return;
         }
 
@@ -123,22 +107,27 @@ function fetchElementsAsync(options, callback) {
             }
             if (cond & GLib.IOCondition.HUP) {
                 GLib.spawn_close_pid(pid);
+                _scanInProgress = false;
+                if (scanId !== _activeScanId) {
+                    // Outdated scan! Discard silently.
+                    return GLib.SOURCE_REMOVE;
+                }
                 try {
                     const parsed = JSON.parse(output);
                     if (Array.isArray(parsed)) {
                         _cachedElements = parsed;
-                        _cacheTimestamp = Date.now();
                     }
-                    callback(parsed);
+                    if (callback) callback(parsed);
                 } catch (_err) {
-                    callback([]);
+                    if (callback) callback([]);
                 }
                 return GLib.SOURCE_REMOVE;
             }
             return GLib.SOURCE_CONTINUE;
         });
     } catch (_err) {
-        callback([]);
+        _scanInProgress = false;
+        if (callback) callback([]);
     }
 }
 
@@ -153,24 +142,58 @@ function snapToNearestElement(state, window, drawingArea) {
     const targetPxX = state.point.x * winW;
     const targetPxY = state.point.y * winH;
 
-    const source = (_cachedElements && _cachedElements.length > 0)
-        ? _cachedElements
-        : (state.nearbyElements || []);
+    const source = _cachedElements || [];
 
     if (!source || source.length === 0) {
+        state.snapCandidates = [];
+        state.snapIndex = -1;
+        state.snappedElement = null;
+        if (drawingArea) {
+            drawingArea.queue_draw();
+        }
         return;
     }
 
-    // Strictly confine candidates inside the selected micro cell boundary
-    const cellMinX = state.rect.x * winW;
-    const cellMaxX = (state.rect.x + state.rect.width) * winW;
-    const cellMinY = state.rect.y * winH;
-    const cellMaxY = (state.rect.y + state.rect.height) * winH;
+    // Strictly confine candidates inside the selected micro cell boundary.
+    // A small tolerance (4px) is applied so elements whose centroids sit at the
+    // very edge of a cell (e.g. GitHub "Code" tab flush with a cell boundary)
+    // are not silently excluded.
+    const CELL_TOLERANCE_PX = 4;
+    const cellMinX = state.rect.x * winW - CELL_TOLERANCE_PX;
+    const cellMaxX = (state.rect.x + state.rect.width) * winW + CELL_TOLERANCE_PX;
+    const cellMinY = state.rect.y * winH - CELL_TOLERANCE_PX;
+    const cellMaxY = (state.rect.y + state.rect.height) * winH + CELL_TOLERANCE_PX;
 
-    const inCell = source.filter(e =>
-        e.cx >= cellMinX && e.cx <= cellMaxX &&
-        e.cy >= cellMinY && e.cy <= cellMaxY
-    );
+    let inCell = [];
+    for (const e of source) {
+        const centerInCell = (
+            e.cx >= cellMinX && e.cx <= cellMaxX &&
+            e.cy >= cellMinY && e.cy <= cellMaxY
+        );
+        const intersectsCell = (
+            e.x <= cellMaxX && (e.x + e.w) >= cellMinX &&
+            e.y <= cellMaxY && (e.y + e.h) >= cellMinY
+        );
+
+        if (centerInCell) {
+            inCell.push({ ...e });
+        } else if (intersectsCell) {
+            // For wide elements spanning across cells (e.g. tabs), compute the center
+            // of the portion visible within this micro-cell so the snap coordinate stays
+            // strictly inside the cell boundary without teleporting across the screen.
+            const interLeft = Math.max(e.x, cellMinX);
+            const interRight = Math.min(e.x + e.w, cellMaxX);
+            const interTop = Math.max(e.y, cellMinY);
+            const interBottom = Math.min(e.y + e.h, cellMaxY);
+            const cellCx = (interLeft + interRight) / 2.0;
+            const cellCy = (interTop + interBottom) / 2.0;
+            inCell.push({
+                ...e,
+                cx: cellCx,
+                cy: cellCy,
+            });
+        }
+    }
 
     if (inCell.length === 0) {
         state.snapCandidates = [];
@@ -180,6 +203,12 @@ function snapToNearestElement(state, window, drawingArea) {
             drawingArea.queue_draw();
         }
         return;
+    }
+
+    // Ensure all cycled candidates strictly belong to the primary application in the cell
+    const primaryApp = inCell[0].app_name;
+    if (primaryApp) {
+        inCell = inCell.filter(e => e.app_name === primaryApp);
     }
 
     // ── Reading-order sort ────────────────────────────────────────────────────
@@ -250,6 +279,19 @@ function cycleSnap(state, window, drawingArea, direction) {
     if (drawingArea) {
         drawingArea.queue_draw();
     }
+}
+
+function drawRoundedRect(context, x, y, w, h, radius) {
+    context.moveTo(x + radius, y);
+    context.lineTo(x + w - radius, y);
+    context.arc(x + w - radius, y + radius, radius, -Math.PI / 2, 0);
+    context.lineTo(x + w, y + h - radius);
+    context.arc(x + w - radius, y + h - radius, radius, 0, Math.PI / 2);
+    context.lineTo(x + radius, y + h);
+    context.arc(x + radius, y + h - radius, radius, Math.PI / 2, Math.PI);
+    context.lineTo(x, y + radius);
+    context.arc(x + radius, y + radius, radius, Math.PI, -Math.PI / 2);
+    context.closePath();
 }
 
 function drawLabel(area, context, label, x, y, options = {}) {
@@ -438,82 +480,43 @@ function drawOverlay(area, context, width, height, state) {
     }
 
     if (state.mode === 'scroll') {
-        // Minimal background tint so underlying content is 100% legible
-        context.setSourceRGBA(0.01, 0.02, 0.04, 0.04);
-        context.rectangle(0, 0, width, height);
+        // Compact acrylic HUD pill fitting inside (width, height)
+        const pillWidth = Math.min(width, 560);
+        const pillHeight = Math.min(height, 48);
+        const pillX = (width - pillWidth) / 2;
+        const pillY = (height - pillHeight) / 2;
+        const radius = 12;
+
+        // Dark acrylic glass background
+        context.setSourceRGBA(0.06, 0.08, 0.14, 0.94);
+        drawRoundedRect(context, pillX, pillY, pillWidth, pillHeight, radius);
         context.fill();
 
-        const reticleX = (state.point ? state.point.x : 0.5) * width;
-        const reticleY = (state.point ? state.point.y : 0.5) * height;
-
-        // Animated / directional scroll anchor ring at reticle position
-        const radius = 22;
-        context.setSourceRGBA(0.18, 0.80, 0.97, 0.35); // cyan glow
-        context.setLineWidth(4.0);
-        context.arc(reticleX, reticleY, radius + 2, 0, 2 * Math.PI);
+        // Accent border (cyan)
+        context.setSourceRGBA(0.18, 0.80, 0.97, 0.85);
+        context.setLineWidth(1.5);
+        drawRoundedRect(context, pillX, pillY, pillWidth, pillHeight, radius);
         context.stroke();
 
-        context.setSourceRGBA(0.18, 0.80, 0.97, 0.95);
-        context.setLineWidth(2.0);
-        context.arc(reticleX, reticleY, radius, 0, 2 * Math.PI);
-        context.stroke();
-
-        // Center dot
-        context.setSourceRGBA(0.18, 0.80, 0.97, 1.0);
-        context.arc(reticleX, reticleY, 3.0, 0, 2 * Math.PI);
-        context.fill();
-
-        // Direction indicators around anchor
+        // Direction indicators & status
         const isUp = state.lastScrollDir === 'up';
         const isDown = state.lastScrollDir === 'down';
+        const isLeft = state.lastScrollDir === 'left';
+        const isRight = state.lastScrollDir === 'right';
 
-        // Up arrow
-        context.setSourceRGBA(0.18, 0.80, 0.97, isUp ? 1.0 : 0.4);
-        context.moveTo(reticleX, reticleY - radius - 14);
-        context.lineTo(reticleX - 7, reticleY - radius - 3);
-        context.lineTo(reticleX + 7, reticleY - radius - 3);
-        context.closePath();
-        context.fill();
+        let dirIcon = '⇕';
+        if (isUp) dirIcon = '▲';
+        else if (isDown) dirIcon = '▼';
+        else if (isLeft) dirIcon = '◀';
+        else if (isRight) dirIcon = '▶';
 
-        // Down arrow
-        context.setSourceRGBA(0.18, 0.80, 0.97, isDown ? 1.0 : 0.4);
-        context.moveTo(reticleX, reticleY + radius + 14);
-        context.lineTo(reticleX - 7, reticleY + radius + 3);
-        context.lineTo(reticleX + 7, reticleY + radius + 3);
-        context.closePath();
-        context.fill();
-
-        // Small badge at scroll anchor
-        drawLabel(area, context, 'Scroll', reticleX, reticleY - 36, {
-            fontSize: 11,
-            paddingX: 8,
-            paddingY: 3,
-            preserveCase: true,
-            bg: [0.10, 0.15, 0.25, 0.95],
-            fg: [0.30, 0.85, 1.0, 1.0],
-        });
-
-        // Floating bottom HUD bar
-        const barWidth = Math.min(width - 40, 780);
-        const barHeight = 44;
-        const barX = (width - barWidth) / 2;
-        const barY = height - barHeight - 24;
-
-        context.setSourceRGBA(0.06, 0.08, 0.12, 0.92);
-        context.rectangle(barX, barY, barWidth, barHeight);
-        context.fill();
-
-        context.setSourceRGBA(0.18, 0.80, 0.97, 0.80);
-        context.setLineWidth(1.0);
-        context.rectangle(barX, barY, barWidth, barHeight);
-        context.stroke();
-
-        const hudText = 'Scroll  —  [j/k] Down/Up  [d/u] Page  [Shift] Faster  [Tab] Grid  [Enter] Click  [Esc] Exit';
+        const hudText = `${dirIcon} SCROLL  —  [j/k] Down/Up  [d/u] Page  [Shift] Faster  [Tab] Grid  [Esc] Done`;
         const hudLayout = area.create_pango_layout(hudText);
-        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans 12'));
+        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 11'));
         const [textW, textH] = hudLayout.get_pixel_size();
-        context.setSourceRGBA(0.80, 0.88, 1.0, 0.90);
-        context.moveTo(barX + (barWidth - textW) / 2, barY + (barHeight - textH) / 2);
+
+        context.setSourceRGBA(0.85, 0.92, 1.0, 0.95);
+        context.moveTo(pillX + (pillWidth - textW) / 2, pillY + (pillHeight - textH) / 2);
         PangoCairo.show_layout(context, hudLayout);
         return;
     }
@@ -837,28 +840,34 @@ let _daemonStream = null;
 
 function sendEvent(eventObj) {
     const line = JSON.stringify(eventObj) + '\n';
-    if (!_daemonStream) {
-        try {
-            const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR') || '/tmp';
-            const sockPath = `${runtimeDir}/notmouse.sock`;
-            const sockFile = Gio.File.new_for_path(sockPath);
-            if (sockFile.query_exists(null)) {
-                const client = new Gio.SocketClient();
-                const addr = Gio.UnixSocketAddress.new(sockPath);
-                const conn = client.connect(addr, null);
-                _daemonStream = conn.get_output_stream();
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (!_daemonStream) {
+            try {
+                const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR') || GLib.get_tmp_dir();
+                const sockPath = `${runtimeDir}/notmouse.sock`;
+                const sockFile = Gio.File.new_for_path(sockPath);
+                if (sockFile.query_exists(null)) {
+                    const client = new Gio.SocketClient();
+                    const addr = Gio.UnixSocketAddress.new(sockPath);
+                    const conn = client.connect(addr, null);
+                    _daemonStream = conn.get_output_stream();
+                }
+            } catch (_e) {
+                _daemonStream = null;
             }
-        } catch (_e) {
-            _daemonStream = null;
         }
-    }
-    if (_daemonStream) {
-        try {
-            _daemonStream.write(line, null);
-            _daemonStream.flush(null);
-            return;
-        } catch (_e) {
-            _daemonStream = null;
+        if (_daemonStream) {
+            try {
+                _daemonStream.write(line, null);
+                _daemonStream.flush(null);
+                return;
+            } catch (_e) {
+                try {
+                    _daemonStream.close(null);
+                } catch (_) {}
+                _daemonStream = null;
+                // Reconnect and retry on next iteration if socket connection was stale/broken
+            }
         }
     }
     print(line.trim());
@@ -882,6 +891,14 @@ function emitSelection(state, action, window) {
     });
 }
 
+function ensureScrollFocused(state, window) {
+    if (!state.scrollFocused) {
+        const target = state.scrollTarget || getScreenCoordinates(state, window);
+        sendEvent({ event: 'move', x: target.x, y: target.y });
+        state.scrollFocused = true;
+    }
+}
+
 function resetOverlayState(state) {
     state.mode = 'grid';
     state.path = [];
@@ -890,6 +907,8 @@ function resetOverlayState(state) {
     state.point = null;
     state.scrollSpeed = 5;
     state.lastScrollDir = null;
+    state.scrollFocused = false;
+    state.scrollTarget = null;
     state.dragging = false;
     state.dragStartPoint = null;
     state.snappedElement = null;
@@ -897,11 +916,15 @@ function resetOverlayState(state) {
     state.snapCandidates = [];
     state.snapIndex = -1;
     state.topBarTarget = null;
+    state.targetPid = null;
 }
 
-function showOverlay(state, window, drawingArea, startUs = null) {
+function showOverlay(state, window, drawingArea, startUs = null, targetPid = null) {
     _lastTriggerStartUs = startUs || GLib.get_real_time();
     resetOverlayState(state);
+    if (targetPid) {
+        state.targetPid = targetPid;
+    }
 
     const display = Gdk.Display.get_default();
     if (display) {
@@ -914,8 +937,6 @@ function showOverlay(state, window, drawingArea, startUs = null) {
     }
     window.maximize();
 
-    // Instantly snapshot active window PID (<50ms) BEFORE presenting overlay
-    const targetPid = detectActiveProcessPid();
     window.set_visible(true);
     window.present();
     drawingArea.grab_focus();
@@ -933,14 +954,20 @@ function showOverlay(state, window, drawingArea, startUs = null) {
         } catch (_e) {}
     }
 
+    // Always flush element cache on every summon — the user may have navigated
+    // to a new page since the last overlay use, so stale cached elements from
+    // the previous URL should never be served.
+    _activeScanId++;
+    _cachedElements = [];
+
     // Scan the focused window asynchronously in the background with zero UI freeze
-    fetchElementsAsync({ pid: targetPid }, (elements) => {
+    fetchElementsAsync((elements) => {
         if (elements && elements.length > 0) {
             if (state.path.length >= MAX_DEPTH && !state.snappedElement && state.point) {
                 snapToNearestElement(state, window, drawingArea);
             }
         }
-    });
+    }, state.targetPid);
 }
 
 function setupOverlaySocket(state, window, drawingArea, application) {
@@ -983,7 +1010,7 @@ function setupOverlaySocket(state, window, drawingArea, application) {
                 if (line) {
                     const data = JSON.parse(line);
                     if (data.action === 'show') {
-                        showOverlay(state, window, drawingArea, data.start_us || null);
+                        showOverlay(state, window, drawingArea, data.start_us || null, data.target_pid || null);
                     } else if (data.action === 'hide') {
                         dismissOverlay(window, application);
                     } else if (data.action === 'quit') {
@@ -1018,12 +1045,15 @@ function runOverlay() {
             point: null,
             scrollSpeed: 5,
             lastScrollDir: null,
+            scrollFocused: false,
+            scrollTarget: null,
             dragging: false,
             dragStartPoint: null,
             snappedElement: null,
             nearbyElements: [],
             snapCandidates: [],  // all elements within cycling radius, sorted by distance
             snapIndex: -1,       // index into snapCandidates of current snap target
+            targetPid: null,
         };
         const window = new Gtk.ApplicationWindow({
             application,
@@ -1097,6 +1127,10 @@ function runOverlay() {
                 // Click and stay: click and STAY locked on target!
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
+                    // Capture link flag BEFORE clearing state — nav links (GitHub tabs etc.)
+                    // trigger SPA page transitions that take ~500–800ms to settle in the DOM.
+                    const wasNavLink = Boolean(state.snappedElement && state.snappedElement.is_link);
+
                     window.set_visible(false);
                     sendEvent({
                         event: 'click',
@@ -1107,6 +1141,7 @@ function runOverlay() {
                     state.lastClickTime = GLib.get_monotonic_time();
 
                     // Invalidate stale element cache since the click may mutate/destroy UI elements
+                    _activeScanId++;
                     _cachedElements = [];
                     _cacheTimestamp = 0;
                     state.snappedElement = null;
@@ -1122,13 +1157,19 @@ function runOverlay() {
                         drawingArea.queue_draw();
                         startRippleAnimation(drawingArea, state);
 
-                        const targetPid = detectActiveProcessPid();
-                        fetchElementsAsync({ pid: targetPid }, (elements) => {
-                            if (elements && elements.length > 0) {
-                                if (state.path.length >= MAX_DEPTH && state.point) {
-                                    snapToNearestElement(state, window, drawingArea);
+                        // For nav-link clicks (SPA page transitions), delay the rescan by an
+                        // additional 550ms so the browser has time to render the new page before
+                        // AT-SPI walks the DOM. Button clicks keep the original fast path.
+                        const rescanDelay = wasNavLink ? 650 : 150;
+                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, rescanDelay, () => {
+                            fetchElementsAsync((elements) => {
+                                if (elements && elements.length > 0) {
+                                    if (state.path.length >= MAX_DEPTH && state.point) {
+                                        snapToNearestElement(state, window, drawingArea);
+                                    }
                                 }
-                            }
+                            }, state.targetPid);
+                            return GLib.SOURCE_REMOVE;
                         });
 
                         return GLib.SOURCE_REMOVE;
@@ -1197,7 +1238,7 @@ function runOverlay() {
                 }
 
                 if (keyval === Gdk.KEY_space || keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter) {
-                    const target = getScreenCoordinates(state, window);
+                    const target = state.scrollTarget || getScreenCoordinates(state, window);
                     sendEvent({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
@@ -1209,15 +1250,22 @@ function runOverlay() {
 
                 if (keyval === Gdk.KEY_Tab) {
                     state.mode = 'grid';
-                    const surface = window.get_surface();
-                    if (surface) {
-                        surface.set_input_region(null);
+                    const display = Gdk.Display.get_default();
+                    if (display) {
+                        const monitors = display.get_monitors();
+                        if (monitors.get_n_items() > 0) {
+                            const monitor = monitors.get_item(0);
+                            const geometry = monitor.get_geometry();
+                            window.set_default_size(geometry.width, geometry.height);
+                        }
                     }
+                    window.maximize();
                     drawingArea.queue_draw();
                     return true;
                 }
 
                 if (char === 'j' || char === 's' || keyval === Gdk.KEY_Down) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'down';
                     sendEvent({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * mult });
                     drawingArea.queue_draw();
@@ -1225,6 +1273,7 @@ function runOverlay() {
                 }
 
                 if (char === 'k' || char === 'w' || keyval === Gdk.KEY_Up) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'up';
                     sendEvent({ event: 'scroll', dx: 0, dy: state.scrollSpeed * mult });
                     drawingArea.queue_draw();
@@ -1232,6 +1281,7 @@ function runOverlay() {
                 }
 
                 if (char === 'd' || keyval === Gdk.KEY_Page_Down) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'down';
                     sendEvent({ event: 'scroll', dx: 0, dy: -state.scrollSpeed * 3 * mult });
                     drawingArea.queue_draw();
@@ -1239,6 +1289,7 @@ function runOverlay() {
                 }
 
                 if (char === 'u' || keyval === Gdk.KEY_Page_Up) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'up';
                     sendEvent({ event: 'scroll', dx: 0, dy: state.scrollSpeed * 3 * mult });
                     drawingArea.queue_draw();
@@ -1246,6 +1297,7 @@ function runOverlay() {
                 }
 
                 if (char === 'h' || keyval === Gdk.KEY_Left) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'left';
                     sendEvent({ event: 'scroll', dx: -state.scrollSpeed * mult, dy: 0 });
                     drawingArea.queue_draw();
@@ -1253,6 +1305,7 @@ function runOverlay() {
                 }
 
                 if (char === 'l' || keyval === Gdk.KEY_Right) {
+                    ensureScrollFocused(state, window);
                     state.lastScrollDir = 'right';
                     sendEvent({ event: 'scroll', dx: state.scrollSpeed * mult, dy: 0 });
                     drawingArea.queue_draw();
@@ -1278,6 +1331,19 @@ function runOverlay() {
                     state.rect = previous;
                     state.path.pop();
                     state.point = null;
+                    state.snappedElement = null;
+                    state.snapCandidates = [];
+                    state.snapIndex = -1;
+
+                    // If returning to root after a click occurred (e.g. user clicked a tab/link
+                    // and backed out to aim at a new target on the new page), flush stale cache
+                    // and start a fresh scan immediately.
+                    if (state.path.length === 0 && state.lastClickTime > 0) {
+                        _activeScanId++;
+                        _cachedElements = [];
+                        fetchElementsAsync(null, state.targetPid);
+                    }
+
                     drawingArea.queue_draw();
                 }
                 return true;
@@ -1305,6 +1371,10 @@ function runOverlay() {
                 // Click and stay: click and STAY on the targeted element!
                 if (char === 'c') {
                     const target = getScreenCoordinates(state, window);
+                    // Capture link flag BEFORE clearing state — nav links (GitHub tabs etc.)
+                    // trigger SPA page transitions that take ~500–800ms to settle in the DOM.
+                    const wasNavLink = Boolean(state.snappedElement && state.snappedElement.is_link);
+
                     window.set_visible(false);
                     sendEvent({
                         event: 'click',
@@ -1315,6 +1385,7 @@ function runOverlay() {
                     state.lastClickTime = GLib.get_monotonic_time();
 
                     // Invalidate stale element cache since the click may mutate/destroy UI elements
+                    _activeScanId++;
                     _cachedElements = [];
                     _cacheTimestamp = 0;
                     state.snappedElement = null;
@@ -1330,11 +1401,19 @@ function runOverlay() {
                         drawingArea.queue_draw();
                         startRippleAnimation(drawingArea, state);
 
-                        const targetPid = detectActiveProcessPid();
-                        fetchElementsAsync({ pid: targetPid }, (elements) => {
-                            if (state.path.length >= MAX_DEPTH && state.point) {
-                                snapToNearestElement(state, window, drawingArea);
-                            }
+                        // For nav-link clicks (SPA page transitions), delay the rescan by an
+                        // additional 650ms so the browser has time to render the new page before
+                        // AT-SPI walks the DOM. Button clicks keep the fast path.
+                        const rescanDelay = wasNavLink ? 650 : 150;
+                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, rescanDelay, () => {
+                            fetchElementsAsync((elements) => {
+                                if (elements && elements.length > 0) {
+                                    if (state.path.length >= MAX_DEPTH && state.point) {
+                                        snapToNearestElement(state, window, drawingArea);
+                                    }
+                                }
+                            }, state.targetPid);
+                            return GLib.SOURCE_REMOVE;
                         });
 
                         return GLib.SOURCE_REMOVE;
@@ -1360,11 +1439,12 @@ function runOverlay() {
 
                 // Tab / Shift+Tab: cycle through snappable elements near current point
                 if (keyval === Gdk.KEY_Tab || keyval === Gdk.KEY_ISO_Left_Tab) {
-                    // If no candidates yet, build them from current point
-                    if (state.snapCandidates.length === 0) {
+                    if (!state.snapCandidates || state.snapCandidates.length === 0) {
                         snapToNearestElement(state, window, drawingArea);
                     }
-                    cycleSnap(state, window, drawingArea, isShift ? -1 : 1);
+                    if (state.snapCandidates && state.snapCandidates.length > 0) {
+                        cycleSnap(state, window, drawingArea, isShift ? -1 : 1);
+                    }
                     return true;
                 }
 
@@ -1395,23 +1475,44 @@ function runOverlay() {
 
                 // Scroll Mode (Continuous Interactive Kinetic Scroll)
                 if (char === 's' || char === 'w') {
+                    const isUp = char === 'w';
                     state.mode = 'scroll';
-                    const target = getScreenCoordinates(state, window);
-                    const surface = window.get_surface();
-                    if (surface) {
-                        surface.set_input_region(new Cairo.Region());
-                    }
-
-                    const isUp = char === 'w' || isShift;
                     state.lastScrollDir = isUp ? 'up' : 'down';
+
+                    // 1. Capture screen target before unmaximizing
+                    const target = getScreenCoordinates(state, window);
+
+                    // 2. Collision avoidance with centered HUD (560x48)
+                    let scrollX = target.x;
+                    let scrollY = target.y;
+                    if (Math.abs(scrollX - 0.5) < 0.16 && Math.abs(scrollY - 0.5) < 0.05) {
+                        scrollY = scrollY >= 0.5 ? 0.56 : 0.44;
+                    }
+                    state.scrollTarget = { x: scrollX, y: scrollY };
+
+                    // 3. Unmaximize window to compact HUD dimensions so underlying window gets pointer focus
+                    window.unmaximize();
+                    window.set_default_size(560, 48);
+
+                    // 4. Prime pointer position immediately
+                    sendEvent({ event: 'move', x: scrollX, y: scrollY });
+
+                    // 5. Emit initial scroll step immediately
+                    const mult = isShift ? 3 : 1;
+                    sendEvent({
+                        event: 'scroll',
+                        dx: 0,
+                        dy: isUp ? state.scrollSpeed * mult : -state.scrollSpeed * mult,
+                    });
+
                     drawingArea.queue_draw();
 
-                    // Delay slightly so Mutter commits empty input region, then emit pointer motion
-                    // so Mutter transfers pointer focus to the underlying window, followed by initial scroll!
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
-                        if (state.mode === 'scroll') {
-                            sendEvent({ event: 'move', x: target.x, y: target.y });
-                            sendEvent({ event: 'scroll', dx: 0, dy: isUp ? 5 : -5 });
+                    // Re-dispatch move after Mutter commits unmaximize configure to guarantee wl_pointer.enter
+                    // reaches the target window before user begins scrolling via j/k.
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
+                        if (state.mode === 'scroll' && state.scrollTarget) {
+                            sendEvent({ event: 'move', x: state.scrollTarget.x, y: state.scrollTarget.y });
+                            state.scrollFocused = true;
                         }
                         return GLib.SOURCE_REMOVE;
                     });

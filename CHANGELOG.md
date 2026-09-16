@@ -7,6 +7,29 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-16
+
+### Added
+
+- **Instant Kinetic Scroll Mode**: Entering scroll mode (`s` or `w`) immediately transitions the overlay window from a maximized surface to a compact acrylic HUD pill (`560×48`), unblocking GNOME Mutter's pointer tracker and allowing wheel events (`REL_WHEEL` / `REL_HWHEEL`) to reach the underlying target window in <1 ms without requiring a physical click.
+- **Scroll HUD Collision Avoidance**: Automatically detects if the reticle target coordinate is covered by the centered HUD pill and nudges cursor placement vertically (`0.56` or `0.44`) so pointer focus is guaranteed to land on the underlying viewport.
+- **Immediate Scroll Step**: Emits an initial scroll step on the entry keystroke itself (`s` for down, `w` for up), providing instantaneous visual feedback (<50 ms).
+- **Interactive Continuous Scrolling**: Continuous kinetic scrolling with `j`/`k`/`d`/`u`/`h`/`l` and `Shift` multiplier (3× speed).
+- **Bidirectional Scroll Roundtrip**: Pressing `Tab` from scroll mode cleanly re-maximizes the overlay back to Grid Mode. Pressing `Enter` / `Space` clicks at the scroll target and dismisses the overlay.
+- **Accessible Element Snapping & Cycling**: Integrated asynchronous AT-SPI background accessibility scanner (`atspi_scanner.py`) to detect interactive controls (buttons, links, text fields, menu items, table cells, tabs).
+- **Candidate Cycling with `Tab`**: Pressing `Tab` or `Shift+Tab` cycles through nearest interactive elements within the lock radius, rendering amber badges and reticle snaps.
+- **GTK 4 / Nautilus Table & List Item Refinement**: Added recursive inner label resolution (`find_inner_label_bounds`) for wide GTK 4 `GtkColumnView` / `GtkListView` row containers, centering click centroids on file names and icons instead of blank container margins.
+- **Active Foreground Window Tracking**: Resident daemon supervises `atspi_scanner.py --monitor` in the background, listening to `window:activate` and `object:state-changed:active` to record active window PIDs to `$XDG_RUNTIME_DIR/notmouse-active-pid` and isolate element scanning strictly to the active app.
+- **Desktop Accessibility Auto-Configuration**: `install.sh` enables `org.gnome.desktop.interface toolkit-accessibility true` and sets `ACCESSIBILITY_ENABLED=1` in `~/.config/environment.d/` for automatic on-demand accessibility support in Chromium, Vivaldi, Electron, and Qt applications.
+
+### Fixed
+
+- **Wayland Maximized Input Interception**: Solved the issue where maximized windows in GTK 4 on Wayland intercept all wheel events regardless of `gdk_surface_set_input_region` empty region calls.
+- **Resident Socket Broken Pipe Resilience**: `sendEvent()` in `overlay.js` catches socket write errors and broken pipes, automatically reconnecting to `notmouse.sock` and retrying delivery.
+- **Wayland Zero-Delta Motion Deduplication**: `InputDevice::move_to_normalized` in `crates/notmouse/src/input.rs` emits a 1-unit motion nudge when coordinates are identical, ensuring `libinput` and Mutter never suppress cursor repositioning.
+- **AT-SPI Focus Inversion**: Fixed window activation timing where overlay presentation stole focus before accessibility scanning.
+- **Single Page Application (SPA) Transition Stale Cache**: Invalidate element cache on click-and-stay navigation link activation with settling delay.
+
 ## [0.1.0] — 2026-09-12
 
 ### Added
@@ -47,5 +70,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ---
 
-[Unreleased]: https://github.com/oneSevenAR/NotMouse/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/oneSevenAR/NotMouse/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/oneSevenAR/NotMouse/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/oneSevenAR/NotMouse/releases/tag/v0.1.0
