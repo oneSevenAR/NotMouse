@@ -137,7 +137,20 @@ if ! ls /dev/uinput &>/dev/null 2>&1; then
     echo "  Run one of the following and log out / back in:"
     echo "    sudo usermod -aG input \$USER"
     echo "  Or add a udev rule:"
-    echo '    echo '"'"'KERNEL=="uinput", GROUP="input", MODE="0660"'"'"' | sudo tee /etc/udev/rules.d/99-uinput.rules && sudo udevadm control --reload-rules'
+fi
+
+# ── Desktop accessibility support (AT-SPI / Chromium / Electron) ─────────────
+
+if command -v gsettings &>/dev/null; then
+    info "Enabling desktop accessibility (AT-SPI) in GNOME…"
+    gsettings set org.gnome.desktop.interface toolkit-accessibility true 2>/dev/null || true
+    ok "toolkit-accessibility enabled."
+fi
+
+ENV_D="${HOME}/.config/environment.d"
+if mkdir -p "${ENV_D}" 2>/dev/null; then
+    echo "ACCESSIBILITY_ENABLED=1" > "${ENV_D}/99-notmouse.conf"
+    ok "Session environment configured (${ENV_D}/99-notmouse.conf)."
 fi
 
 # ── GNOME custom shortcut ─────────────────────────────────────────────────────
