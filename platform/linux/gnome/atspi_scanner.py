@@ -179,6 +179,27 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
         except Exception:
             pass
 
+    def find_inner_label_bounds(parent_node, max_d=8):
+        def _search(curr, d):
+            if d > max_d or not curr:
+                return None
+            try:
+                r = curr.get_role_name()
+                if r in ('label', 'text') and curr.get_name():
+                    c = curr.get_component_iface()
+                    if c:
+                        cb = c.get_extents(Atspi.CoordType.WINDOW)
+                        if cb.width > 0 and cb.height > 0:
+                            return cb
+                for idx in range(min(curr.get_child_count(), 10)):
+                    res = _search(curr.get_child_at_index(idx), d + 1)
+                    if res:
+                        return res
+            except Exception:
+                pass
+            return None
+        return _search(parent_node, 0)
+
     def walk(node, depth=0, frame_x=0, frame_y=0, frame_w=99999, frame_h=99999):
         if depth > 35:
             return
@@ -206,14 +227,44 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
                                 and b.height >= LINK_MIN_H)
 
                     if is_control or is_link:
+                        # For wide table cells and list items (e.g. Nautilus file rows spanning 1800px),
+                        # inspect the inner label to snap directly to the file/item name and icon
+                        # rather than empty whitespace in the middle of the window.
+                        if role in ('table cell', 'list item', 'tree item') and b.width > 120:
+                            lb = find_inner_label_bounds(node)
+                            if lb:
+                                start_x = max(b.x, lb.x - 24)
+                                end_x = lb.x + lb.width
+                                cell_w = max(end_x - start_x, 10)
+                                elem_x = frame_x + start_x
+                                elem_y = frame_y + lb.y
+                                elem_w = cell_w
+                                elem_h = lb.height
+                                elem_cx = elem_x + elem_w / 2.0
+                                elem_cy = elem_y + elem_h / 2.0
+                            else:
+                                elem_x = sx
+                                elem_y = sy
+                                elem_w = min(b.width, 180)
+                                elem_h = b.height
+                                elem_cx = elem_x + elem_w / 2.0
+                                elem_cy = cy
+                        else:
+                            elem_x = sx
+                            elem_y = sy
+                            elem_w = b.width
+                            elem_h = b.height
+                            elem_cx = cx
+                            elem_cy = cy
+
                         # Must be SHOWING — element and all ancestors are actually rendered
                         ss = node.get_state_set()
                         if ss and ss.contains(Atspi.StateType.SHOWING):
                             # Center must fall inside the visible frame and requested bounds
                             if 0 <= b.x < frame_w and 0 <= b.y < frame_h:
-                                if min_x is not None and not (min_x <= cx <= max_x):
+                                if min_x is not None and not (min_x <= elem_cx <= max_x):
                                     pass
-                                elif min_y is not None and not (min_y <= cy <= max_y):
+                                elif min_y is not None and not (min_y <= elem_cy <= max_y):
                                     pass
                                 else:
                                     elements.append({
@@ -222,12 +273,12 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
                                         'is_link': is_link and not is_control,
                                         'app_name': active_app_name,
                                         'app_pid': active_app_pid,
-                                        'x': sx,
-                                        'y': sy,
-                                        'w': b.width,
-                                        'h': b.height,
-                                        'cx': cx,
-                                        'cy': cy,
+                                        'x': elem_x,
+                                        'y': elem_y,
+                                        'w': elem_w,
+                                        'h': elem_h,
+                                        'cx': elem_cx,
+                                        'cy': elem_cy,
                                     })
 
             c_count = node.get_child_count()

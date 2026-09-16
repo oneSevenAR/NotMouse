@@ -866,28 +866,34 @@ let _daemonStream = null;
 
 function sendEvent(eventObj) {
     const line = JSON.stringify(eventObj) + '\n';
-    if (!_daemonStream) {
-        try {
-            const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR') || '/tmp';
-            const sockPath = `${runtimeDir}/notmouse.sock`;
-            const sockFile = Gio.File.new_for_path(sockPath);
-            if (sockFile.query_exists(null)) {
-                const client = new Gio.SocketClient();
-                const addr = Gio.UnixSocketAddress.new(sockPath);
-                const conn = client.connect(addr, null);
-                _daemonStream = conn.get_output_stream();
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (!_daemonStream) {
+            try {
+                const runtimeDir = GLib.getenv('XDG_RUNTIME_DIR') || GLib.get_tmp_dir();
+                const sockPath = `${runtimeDir}/notmouse.sock`;
+                const sockFile = Gio.File.new_for_path(sockPath);
+                if (sockFile.query_exists(null)) {
+                    const client = new Gio.SocketClient();
+                    const addr = Gio.UnixSocketAddress.new(sockPath);
+                    const conn = client.connect(addr, null);
+                    _daemonStream = conn.get_output_stream();
+                }
+            } catch (_e) {
+                _daemonStream = null;
             }
-        } catch (_e) {
-            _daemonStream = null;
         }
-    }
-    if (_daemonStream) {
-        try {
-            _daemonStream.write(line, null);
-            _daemonStream.flush(null);
-            return;
-        } catch (_e) {
-            _daemonStream = null;
+        if (_daemonStream) {
+            try {
+                _daemonStream.write(line, null);
+                _daemonStream.flush(null);
+                return;
+            } catch (_e) {
+                try {
+                    _daemonStream.close(null);
+                } catch (_) {}
+                _daemonStream = null;
+                // Reconnect and retry on next iteration if socket connection was stale/broken
+            }
         }
     }
     print(line.trim());

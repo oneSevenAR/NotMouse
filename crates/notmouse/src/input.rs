@@ -57,6 +57,7 @@ impl std::error::Error for InputError {}
 /// Virtual mouse device managing absolute positioning, clicks, drags, and scrolling.
 pub struct InputDevice {
     pub(crate) device: VirtualDevice,
+    pub(crate) last_pos: Option<(i32, i32)>,
 }
 
 impl InputDevice {
@@ -111,20 +112,24 @@ impl InputDevice {
         // Wait for Wayland compositor / seat manager to bind the device node
         wait_for_compositor_binding(&mut device);
 
-        let mut input_dev = Self { device };
+        let mut input_dev = Self {
+            device,
+            last_pos: None,
+        };
         // Warm up coordinates in compositor so Clutter seat initializes pointer position
         let _ = input_dev.move_to_normalized(0.5, 0.5);
-        thread::sleep(Duration::from_millis(50));
 
         Ok(input_dev)
     }
 
-    /// Moves the pointer to normalized screen coordinates $(x, y) \in [0.0, 1.0]$.
+    /// Moves the pointer to normalized coordinates `(x, y)` in `[0.0, 1.0]`.
     ///
-    /// Also emits a zero-net-delta relative twitch (`+1px` then `-1px`) so that the
-    /// Linux kernel `evdev` layer never deduplicates unchanged absolute coordinates,
-    /// and Mutter/Wayland unconditionally synthesizes `wl_pointer.enter` to the
-    /// underlying application window (e.g. browser tab after `Alt+Tab`).
+    /// Maps normalized `[0.0, 1.0]` onto hardware device range `[0, ABS_MAX_RANGE]`.
+    ///
+    /// If the cursor position is unchanged, emits a 1-unit motion nudge so `libinput`
+    /// and GNOME Mutter never suppress the motion event, guaranteeing that
+    /// `meta_wayland_pointer_update` refreshes pointer focus to newly unmapped or
+    /// input-transparent surfaces.
     ///
     /// # Errors
     ///
@@ -138,6 +143,17 @@ impl InputDevice {
         #[allow(clippy::cast_possible_truncation)]
         let abs_y = (clamped_y * f64::from(ABS_MAX_RANGE)).round() as i32;
 
+        if self.last_pos == Some((abs_x, abs_y)) {
+            let nudge_x = if abs_x > 0 { abs_x - 1 } else { abs_x + 1 };
+            let nudge = [
+                InputEvent::new(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, nudge_x),
+                InputEvent::new(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Y.0, abs_y),
+                InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+            ];
+            self.device.emit(&nudge).map_err(InputError::Emit)?;
+            thread::sleep(Duration::from_millis(2));
+        }
+
         let events = [
             InputEvent::new(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, abs_x),
             InputEvent::new(EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Y.0, abs_y),
@@ -149,6 +165,7 @@ impl InputDevice {
         ];
 
         self.device.emit(&events).map_err(InputError::Emit)?;
+        self.last_pos = Some((abs_x, abs_y));
         Ok(())
     }
 

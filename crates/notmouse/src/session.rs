@@ -183,6 +183,7 @@ pub fn execute_event(device: &mut InputDevice, event: &OverlayEvent) -> Result<(
             thread::sleep(Duration::from_millis(15));
         }
         OverlayEvent::Scroll { dx, dy } => {
+            println!("!mouse: live scroll dy={dy}, dx={dx}");
             device
                 .scroll(*dy, *dx)
                 .map_err(|e| format!("live scroll failed: {e}"))?;
