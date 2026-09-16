@@ -804,6 +804,52 @@ function keyCharacter(keyval) {
     return codePoint === 0 ? '' : String.fromCodePoint(codePoint).toLowerCase();
 }
 
+function getActiveMonitor(window) {
+    const display = Gdk.Display.get_default();
+    if (!display) return null;
+    const monitors = display.get_monitors();
+    if (!monitors || monitors.get_n_items() === 0) return null;
+
+    if (window) {
+        const surface = window.get_surface();
+        if (surface && display.get_monitor_at_surface) {
+            const m = display.get_monitor_at_surface(surface);
+            if (m) return m;
+        }
+    }
+    return monitors.get_item(0);
+}
+
+function getDesktopBounds() {
+    const display = Gdk.Display.get_default();
+    const monitors = display ? display.get_monitors() : null;
+    if (!monitors || monitors.get_n_items() === 0) {
+        return { minX: 0, minY: 0, width: 1920, height: 1080 };
+    }
+    let minX = 0, minY = 0, maxX = 0, maxY = 0;
+    const count = monitors.get_n_items();
+    for (let i = 0; i < count; i++) {
+        const g = monitors.get_item(i).get_geometry();
+        if (i === 0) {
+            minX = g.x;
+            minY = g.y;
+            maxX = g.x + g.width;
+            maxY = g.y + g.height;
+        } else {
+            minX = Math.min(minX, g.x);
+            minY = Math.min(minY, g.y);
+            maxX = Math.max(maxX, g.x + g.width);
+            maxY = Math.max(maxY, g.y + g.height);
+        }
+    }
+    return {
+        minX,
+        minY,
+        width: Math.max(1, maxX - minX),
+        height: Math.max(1, maxY - minY),
+    };
+}
+
 function getScreenCoordinates(state, window) {
     const target = state.point || {
         x: state.rect.x + state.rect.width / 2,
@@ -812,12 +858,10 @@ function getScreenCoordinates(state, window) {
     if (!window) {
         return target;
     }
-    const display = Gdk.Display.get_default();
-    const monitors = display ? display.get_monitors() : null;
-    if (!monitors || monitors.get_n_items() === 0) {
+    const monitor = getActiveMonitor(window);
+    if (!monitor) {
         return target;
     }
-    const monitor = monitors.get_item(0);
     const geom = monitor.get_geometry();
     const winW = window.get_width();
     const winH = window.get_height();
@@ -829,9 +873,13 @@ function getScreenCoordinates(state, window) {
     const pixelX = target.x * winW;
     const pixelY = target.y * winH;
 
+    const desktop = getDesktopBounds();
+    const globalX = geom.x + offsetX + pixelX;
+    const globalY = geom.y + offsetY + pixelY;
+
     return {
-        x: (offsetX + pixelX) / geom.width,
-        y: (offsetY + pixelY) / geom.height,
+        x: (globalX - desktop.minX) / desktop.width,
+        y: (globalY - desktop.minY) / desktop.height,
     };
 }
 
@@ -926,14 +974,10 @@ function showOverlay(state, window, drawingArea, startUs = null, targetPid = nul
         state.targetPid = targetPid;
     }
 
-    const display = Gdk.Display.get_default();
-    if (display) {
-        const monitors = display.get_monitors();
-        if (monitors.get_n_items() > 0) {
-            const monitor = monitors.get_item(0);
-            const geometry = monitor.get_geometry();
-            window.set_default_size(geometry.width, geometry.height);
-        }
+    const monitor = getActiveMonitor(window);
+    if (monitor) {
+        const geometry = monitor.get_geometry();
+        window.set_default_size(geometry.width, geometry.height);
     }
     window.maximize();
 
@@ -1250,14 +1294,10 @@ function runOverlay() {
 
                 if (keyval === Gdk.KEY_Tab) {
                     state.mode = 'grid';
-                    const display = Gdk.Display.get_default();
-                    if (display) {
-                        const monitors = display.get_monitors();
-                        if (monitors.get_n_items() > 0) {
-                            const monitor = monitors.get_item(0);
-                            const geometry = monitor.get_geometry();
-                            window.set_default_size(geometry.width, geometry.height);
-                        }
+                    const monitor = getActiveMonitor(window);
+                    if (monitor) {
+                        const geometry = monitor.get_geometry();
+                        window.set_default_size(geometry.width, geometry.height);
                     }
                     window.maximize();
                     drawingArea.queue_draw();
@@ -1529,10 +1569,9 @@ function runOverlay() {
                 }
 
                 let minY = 0;
-                const display = Gdk.Display.get_default();
-                const monitors = display ? display.get_monitors() : null;
-                if (monitors && monitors.get_n_items() > 0) {
-                    const geom = monitors.get_item(0).get_geometry();
+                const monitor = getActiveMonitor(window);
+                if (monitor) {
+                    const geom = monitor.get_geometry();
                     const winH = window.get_height();
                     minY = -(Math.max(0, geom.height - winH) / winH);
                 }

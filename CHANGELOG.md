@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-16
+
+### Added
+
+- **Automated `/dev/uinput` Permission Provisioning**: `install.sh` checks write access to `/dev/uinput` during preflight and automatically configures `/etc/udev/rules.d/99-notmouse.rules` with `TAG+="uaccess"` via `sudo`, ensuring out-of-the-box operation on vanilla Linux installations.
+- **Python AT-SPI Typelib Diagnostics**: `install.sh` verifies Python 3 PyGObject and AT-SPI typelib availability, outputting package manager installation commands for Debian/Ubuntu, Fedora, and Arch Linux if missing.
+- **Universal Chromium & Electron Web Accessibility Flags**: Installer automatically configures `--force-renderer-accessibility` across `chrome-flags.conf`, `chromium-flags.conf`, and `brave-flags.conf` in addition to systemd session environment.
+- **Multi-Monitor Global Geometry Normalization**: Updated `getScreenCoordinates()`, `showOverlay()`, and scroll/nudge handlers in `overlay.js` to dynamically detect the active monitor surface and map coordinates across the full virtual desktop bounding box.
+- **Compositor Detection & Configuration Guidance**: Detects desktop environment on install and outputs exact configuration directives for Sway, Hyprland, and KDE Plasma.
+- **Documentation Overhaul**: Fully rewritten `README.md` detailing supported compositors, system dependencies, browser setup, complete keybindings reference, and known limitations.
+
+### Fixed
+
+- **Install Binary Collision on Symlinks**: Removed destination binary prior to `install` invocation to avoid same-file collisions when installed via development symlinks.
+- **Multi-Monitor Coordinate Drift**: Fixed hardcoded primary monitor references in overlay geometry calculations.
+
 ## [0.2.0] — 2026-09-16
 
 ### Added
@@ -70,6 +86,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ---
 
-[Unreleased]: https://github.com/oneSevenAR/NotMouse/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/oneSevenAR/NotMouse/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/oneSevenAR/NotMouse/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/oneSevenAR/NotMouse/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/oneSevenAR/NotMouse/releases/tag/v0.1.0

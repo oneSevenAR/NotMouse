@@ -141,6 +141,19 @@
     1. **Active PID Tracking in Resident Daemon:** `notmouse daemon` now launches and supervises `atspi_scanner.py --monitor` in the background. It listens to `window:activate` and `object:state-changed:active` events via AT-SPI, recording the foreground PID to `$XDG_RUNTIME_DIR/notmouse-active-pid` while ignoring overlay mappings (`gjs`, `gnome-shell`).
     2. **Target PID Forwarding:** When `notmouse overlay` is triggered, it reads the active PID and includes `"target_pid": <pid>` in the socket message to `overlay.js`. `overlay.js` passes `--pid <target_pid>` to `atspi_scanner.py`, directly scanning the exact foreground window with zero focus ambiguity.
     3. **Null-Safe Traversal:** Added `if not node: return` guard and exception handling to `check_focus` in `atspi_scanner.py`, resolving crashes on Chromium/Vivaldi placeholder nodes.
-    4. **Unbiased Fallback Scoring:** Removed arbitrary `score += i` desktop index tie-breaker in `atspi_scanner.py`, preventing background apps from stealing priority.
+
+---
+
+## 7. Universal Linux/Wayland Installation & Readiness (v0.2.1)
+
+- [x] **Universal Installation & Hardware/Permission Readiness**
+  - **Automated `/dev/uinput` permissions**: `install.sh` checks write access to `/dev/uinput` and installs `/etc/udev/rules.d/99-notmouse.rules` with `TAG+="uaccess"` via `sudo` if unprivileged access is absent.
+  - **Python AT-SPI preflight verification**: Checks `Atspi 2.0` Python typelib availability and provides package commands for Debian/Ubuntu, Fedora, and Arch.
+  - **Multi-monitor virtual desktop normalization**: `getScreenCoordinates()`, `showOverlay()`, and scroll/nudge in `overlay.js` dynamically detect the active monitor and map coordinates across the full virtual desktop bounding box.
+  - **Universal Chromium & Electron flags**: Automatically configures `--force-renderer-accessibility` in `chrome-flags.conf`, `chromium-flags.conf`, and `brave-flags.conf`.
+  - **Compositor detection**: Checks `$XDG_CURRENT_DESKTOP` and outputs window-rule and keybinding instructions for Sway, Hyprland, and KDE Plasma.
+  - **README Overhaul**: Completely updated `README.md` documenting platform support matrix, prerequisites, browser accessibility setup, up-to-date keybinding reference, and known architectural limitations.
+  - Bump workspace version to `0.2.1` in `Cargo.toml`.
+  - Tag and push `v0.2.1`.
 
 
