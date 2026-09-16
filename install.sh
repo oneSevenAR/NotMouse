@@ -93,6 +93,7 @@ ok "Build complete."
 
 info "Installing binary to ${BIN_DEST}…"
 mkdir -p "$(dirname "${BIN_DEST}")"
+rm -f "${BIN_DEST}"
 install -m 755 "${BUILT_BIN}" "${BIN_DEST}"
 ok "Binary installed."
 
