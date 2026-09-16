@@ -108,13 +108,17 @@
 
 ## 6. Active Bugs & Next Milestones (v0.2.0)
 
-- [ ] **Release v0.2.0 Milestone Tagging**
-  - Consolidate merged features since v0.1.0 (PR #5, PR #6, PR #7, PR #9):
+- [x] **Release v0.2.0 Milestone Tagging**
+  - Consolidate merged features since v0.1.0 (PR #5, PR #6, PR #7, PR #9, PR #10):
     - Sub-25ms resident warm overlay architecture (`notmouse-overlay.sock`, async scanner)
     - Strict cell candidate bounds for snapping
     - Click & Stay (`c`) target preservation + Mutter remap + neon green ripple animation
     - Reading order sort with row banding
     - Curated link support (heuristics for nav links / tabs with amber badges)
+    - Instant kinetic scroll mode activation via compact HUD unmaximize and target collision avoidance
+    - GTK 4 / Nautilus table & list cell recursive inner label centroid refinement
+    - Background AT-SPI foreground application tracking via `--monitor`
+    - Automated desktop accessibility configuration in `install.sh`
   - Bump workspace version to `0.2.0` in `Cargo.toml`.
   - Update `CHANGELOG.md` with `## [0.2.0]` section.
   - Tag and push `v0.2.0` on GitHub.
