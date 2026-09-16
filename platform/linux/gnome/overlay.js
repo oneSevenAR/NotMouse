@@ -281,6 +281,19 @@ function cycleSnap(state, window, drawingArea, direction) {
     }
 }
 
+function drawRoundedRect(context, x, y, w, h, radius) {
+    context.moveTo(x + radius, y);
+    context.lineTo(x + w - radius, y);
+    context.arc(x + w - radius, y + radius, radius, -Math.PI / 2, 0);
+    context.lineTo(x + w, y + h - radius);
+    context.arc(x + w - radius, y + h - radius, radius, 0, Math.PI / 2);
+    context.lineTo(x + radius, y + h);
+    context.arc(x + radius, y + h - radius, radius, Math.PI / 2, Math.PI);
+    context.lineTo(x, y + radius);
+    context.arc(x + radius, y + radius, radius, Math.PI, -Math.PI / 2);
+    context.closePath();
+}
+
 function drawLabel(area, context, label, x, y, options = {}) {
     const fontSize = options.fontSize || 22;
     const fontDesc = options.font || `Sans Bold ${fontSize}`;
@@ -467,82 +480,43 @@ function drawOverlay(area, context, width, height, state) {
     }
 
     if (state.mode === 'scroll') {
-        // Minimal background tint so underlying content is 100% legible
-        context.setSourceRGBA(0.01, 0.02, 0.04, 0.04);
-        context.rectangle(0, 0, width, height);
+        // Compact acrylic HUD pill fitting inside (width, height)
+        const pillWidth = Math.min(width, 560);
+        const pillHeight = Math.min(height, 48);
+        const pillX = (width - pillWidth) / 2;
+        const pillY = (height - pillHeight) / 2;
+        const radius = 12;
+
+        // Dark acrylic glass background
+        context.setSourceRGBA(0.06, 0.08, 0.14, 0.94);
+        drawRoundedRect(context, pillX, pillY, pillWidth, pillHeight, radius);
         context.fill();
 
-        const reticleX = (state.point ? state.point.x : 0.5) * width;
-        const reticleY = (state.point ? state.point.y : 0.5) * height;
-
-        // Animated / directional scroll anchor ring at reticle position
-        const radius = 22;
-        context.setSourceRGBA(0.18, 0.80, 0.97, 0.35); // cyan glow
-        context.setLineWidth(4.0);
-        context.arc(reticleX, reticleY, radius + 2, 0, 2 * Math.PI);
+        // Accent border (cyan)
+        context.setSourceRGBA(0.18, 0.80, 0.97, 0.85);
+        context.setLineWidth(1.5);
+        drawRoundedRect(context, pillX, pillY, pillWidth, pillHeight, radius);
         context.stroke();
 
-        context.setSourceRGBA(0.18, 0.80, 0.97, 0.95);
-        context.setLineWidth(2.0);
-        context.arc(reticleX, reticleY, radius, 0, 2 * Math.PI);
-        context.stroke();
-
-        // Center dot
-        context.setSourceRGBA(0.18, 0.80, 0.97, 1.0);
-        context.arc(reticleX, reticleY, 3.0, 0, 2 * Math.PI);
-        context.fill();
-
-        // Direction indicators around anchor
+        // Direction indicators & status
         const isUp = state.lastScrollDir === 'up';
         const isDown = state.lastScrollDir === 'down';
+        const isLeft = state.lastScrollDir === 'left';
+        const isRight = state.lastScrollDir === 'right';
 
-        // Up arrow
-        context.setSourceRGBA(0.18, 0.80, 0.97, isUp ? 1.0 : 0.4);
-        context.moveTo(reticleX, reticleY - radius - 14);
-        context.lineTo(reticleX - 7, reticleY - radius - 3);
-        context.lineTo(reticleX + 7, reticleY - radius - 3);
-        context.closePath();
-        context.fill();
+        let dirIcon = '⇕';
+        if (isUp) dirIcon = '▲';
+        else if (isDown) dirIcon = '▼';
+        else if (isLeft) dirIcon = '◀';
+        else if (isRight) dirIcon = '▶';
 
-        // Down arrow
-        context.setSourceRGBA(0.18, 0.80, 0.97, isDown ? 1.0 : 0.4);
-        context.moveTo(reticleX, reticleY + radius + 14);
-        context.lineTo(reticleX - 7, reticleY + radius + 3);
-        context.lineTo(reticleX + 7, reticleY + radius + 3);
-        context.closePath();
-        context.fill();
-
-        // Small badge at scroll anchor
-        drawLabel(area, context, 'Scroll', reticleX, reticleY - 36, {
-            fontSize: 11,
-            paddingX: 8,
-            paddingY: 3,
-            preserveCase: true,
-            bg: [0.10, 0.15, 0.25, 0.95],
-            fg: [0.30, 0.85, 1.0, 1.0],
-        });
-
-        // Floating bottom HUD bar
-        const barWidth = Math.min(width - 40, 780);
-        const barHeight = 44;
-        const barX = (width - barWidth) / 2;
-        const barY = height - barHeight - 24;
-
-        context.setSourceRGBA(0.06, 0.08, 0.12, 0.92);
-        context.rectangle(barX, barY, barWidth, barHeight);
-        context.fill();
-
-        context.setSourceRGBA(0.18, 0.80, 0.97, 0.80);
-        context.setLineWidth(1.0);
-        context.rectangle(barX, barY, barWidth, barHeight);
-        context.stroke();
-
-        const hudText = 'Scroll  —  [j/k] Down/Up  [d/u] Page  [Shift] Faster  [Tab] Grid  [Enter] Click  [Esc] Exit';
+        const hudText = `${dirIcon} SCROLL  —  [j/k] Down/Up  [d/u] Page  [Shift] Faster  [Tab] Grid  [Esc] Done`;
         const hudLayout = area.create_pango_layout(hudText);
-        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans 12'));
+        hudLayout.set_font_description(Pango.FontDescription.from_string('Sans Bold 11'));
         const [textW, textH] = hudLayout.get_pixel_size();
-        context.setSourceRGBA(0.80, 0.88, 1.0, 0.90);
-        context.moveTo(barX + (barWidth - textW) / 2, barY + (barHeight - textH) / 2);
+
+        context.setSourceRGBA(0.85, 0.92, 1.0, 0.95);
+        context.moveTo(pillX + (pillWidth - textW) / 2, pillY + (pillHeight - textH) / 2);
         PangoCairo.show_layout(context, hudLayout);
         return;
     }
@@ -919,7 +893,7 @@ function emitSelection(state, action, window) {
 
 function ensureScrollFocused(state, window) {
     if (!state.scrollFocused) {
-        const target = getScreenCoordinates(state, window);
+        const target = state.scrollTarget || getScreenCoordinates(state, window);
         sendEvent({ event: 'move', x: target.x, y: target.y });
         state.scrollFocused = true;
     }
@@ -934,6 +908,7 @@ function resetOverlayState(state) {
     state.scrollSpeed = 5;
     state.lastScrollDir = null;
     state.scrollFocused = false;
+    state.scrollTarget = null;
     state.dragging = false;
     state.dragStartPoint = null;
     state.snappedElement = null;
@@ -1071,6 +1046,7 @@ function runOverlay() {
             scrollSpeed: 5,
             lastScrollDir: null,
             scrollFocused: false,
+            scrollTarget: null,
             dragging: false,
             dragStartPoint: null,
             snappedElement: null,
@@ -1262,7 +1238,7 @@ function runOverlay() {
                 }
 
                 if (keyval === Gdk.KEY_space || keyval === Gdk.KEY_Return || keyval === Gdk.KEY_KP_Enter) {
-                    const target = getScreenCoordinates(state, window);
+                    const target = state.scrollTarget || getScreenCoordinates(state, window);
                     sendEvent({
                         event: 'click',
                         button: isShift ? 'right' : 'left',
@@ -1274,10 +1250,16 @@ function runOverlay() {
 
                 if (keyval === Gdk.KEY_Tab) {
                     state.mode = 'grid';
-                    const surface = window.get_surface();
-                    if (surface) {
-                        surface.set_input_region(null);
+                    const display = Gdk.Display.get_default();
+                    if (display) {
+                        const monitors = display.get_monitors();
+                        if (monitors.get_n_items() > 0) {
+                            const monitor = monitors.get_item(0);
+                            const geometry = monitor.get_geometry();
+                            window.set_default_size(geometry.width, geometry.height);
+                        }
                     }
+                    window.maximize();
                     drawingArea.queue_draw();
                     return true;
                 }
@@ -1493,25 +1475,43 @@ function runOverlay() {
 
                 // Scroll Mode (Continuous Interactive Kinetic Scroll)
                 if (char === 's' || char === 'w') {
+                    const isUp = char === 'w';
                     state.mode = 'scroll';
-                    state.scrollFocused = false;
-                    const target = getScreenCoordinates(state, window);
-                    const surface = window.get_surface();
-                    if (surface) {
-                        surface.set_input_region(new Cairo.Region());
-                    }
+                    state.lastScrollDir = isUp ? 'up' : 'down';
 
-                    state.lastScrollDir = null;
+                    // 1. Capture screen target before unmaximizing
+                    const target = getScreenCoordinates(state, window);
+
+                    // 2. Collision avoidance with centered HUD (560x48)
+                    let scrollX = target.x;
+                    let scrollY = target.y;
+                    if (Math.abs(scrollX - 0.5) < 0.16 && Math.abs(scrollY - 0.5) < 0.05) {
+                        scrollY = scrollY >= 0.5 ? 0.56 : 0.44;
+                    }
+                    state.scrollTarget = { x: scrollX, y: scrollY };
+
+                    // 3. Unmaximize window to compact HUD dimensions so underlying window gets pointer focus
+                    window.unmaximize();
+                    window.set_default_size(560, 48);
+
+                    // 4. Prime pointer position immediately
+                    sendEvent({ event: 'move', x: scrollX, y: scrollY });
+
+                    // 5. Emit initial scroll step immediately
+                    const mult = isShift ? 3 : 1;
+                    sendEvent({
+                        event: 'scroll',
+                        dx: 0,
+                        dy: isUp ? state.scrollSpeed * mult : -state.scrollSpeed * mult,
+                    });
+
                     drawingArea.queue_draw();
 
-                    // Prime cursor position immediately
-                    sendEvent({ event: 'move', x: target.x, y: target.y });
-
-                    // Re-dispatch move after Mutter commits empty input region to guarantee wl_pointer.enter
+                    // Re-dispatch move after Mutter commits unmaximize configure to guarantee wl_pointer.enter
                     // reaches the target window before user begins scrolling via j/k.
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
-                        if (state.mode === 'scroll') {
-                            sendEvent({ event: 'move', x: target.x, y: target.y });
+                        if (state.mode === 'scroll' && state.scrollTarget) {
+                            sendEvent({ event: 'move', x: state.scrollTarget.x, y: state.scrollTarget.y });
                             state.scrollFocused = true;
                         }
                         return GLib.SOURCE_REMOVE;
