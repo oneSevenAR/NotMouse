@@ -30,6 +30,7 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
         'push button', 'toggle button', 'check box', 'radio button',
         'page tab', 'menu item', 'check menu item', 'radio menu item',
         'entry', 'password text', 'combo box', 'button',
+        'table cell', 'list item', 'tree item',
     }
     # 'link' is included separately because navigation links (GitHub tabs, breadcrumbs,
     # sidebar menus) behave like buttons but are exposed as anchor elements.
@@ -179,7 +180,7 @@ def scan(min_x=None, max_x=None, min_y=None, max_y=None, target_pid=None):
             pass
 
     def walk(node, depth=0, frame_x=0, frame_y=0, frame_w=99999, frame_h=99999):
-        if depth > 25:
+        if depth > 35:
             return
         try:
             comp = node.get_component_iface()
