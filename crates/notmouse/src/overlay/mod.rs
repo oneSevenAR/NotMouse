@@ -292,10 +292,11 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             dismiss_overlay(&window, &app, is_resident);
                             return glib::Propagation::Stop;
                         }
-                        dismiss_overlay(&window, &app, is_resident);
                         emit_selection(
                             &input_device,
                             &window,
+                            &app,
+                            is_resident,
                             s.mode,
                             &s.path,
                             if is_shift {
@@ -308,18 +309,42 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         return glib::Propagation::Stop;
                     }
                     Key::r => {
-                        dismiss_overlay(&window, &app, is_resident);
-                        emit_selection(&input_device, &window, s.mode, &s.path, "right-click", s.point);
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "right-click",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     Key::d => {
-                        dismiss_overlay(&window, &app, is_resident);
-                        emit_selection(&input_device, &window, s.mode, &s.path, "double-click", s.point);
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "double-click",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     Key::m => {
-                        dismiss_overlay(&window, &app, is_resident);
-                        emit_selection(&input_device, &window, s.mode, &s.path, "middle-click", s.point);
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "middle-click",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     Key::v => {
@@ -397,10 +422,11 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         return glib::Propagation::Stop;
                     }
                     Key::Return | Key::KP_Enter | Key::space => {
-                        dismiss_overlay(&window, &app, is_resident);
                         emit_selection(
                             &input_device,
                             &window,
+                            &app,
+                            is_resident,
                             s.mode,
                             &s.path,
                             if is_shift {
@@ -413,8 +439,16 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         return glib::Propagation::Stop;
                     }
                     Key::r => {
-                        dismiss_overlay(&window, &app, is_resident);
-                        emit_selection(&input_device, &window, s.mode, &s.path, "right-click", s.point);
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "right-click",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     Key::c => {
@@ -423,8 +457,8 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         } else {
                             MouseButton::Left
                         };
-                        window.set_visible(false);
                         emit_click(&input_device, &window, s.mode, btn, s.point);
+                        window.set_visible(false);
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
@@ -507,10 +541,11 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             dismiss_overlay(&window, &app, is_resident);
                             return glib::Propagation::Stop;
                         }
-                        dismiss_overlay(&window, &app, is_resident);
                         emit_selection(
                             &input_device,
                             &window,
+                            &app,
+                            is_resident,
                             s.mode,
                             &s.path,
                             if is_shift {
@@ -523,18 +558,42 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         return glib::Propagation::Stop;
                     }
                     Key::r => {
-                        dismiss_overlay(&window, &app, is_resident);
-                        emit_selection(&input_device, &window, s.mode, &s.path, "right-click", s.point);
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "right-click",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     Key::d => {
-                        dismiss_overlay(&window, &app, is_resident);
-                        emit_selection(&input_device, &window, s.mode, &s.path, "double-click", s.point);
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "double-click",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     Key::m => {
-                        dismiss_overlay(&window, &app, is_resident);
-                        emit_selection(&input_device, &window, s.mode, &s.path, "middle-click", s.point);
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "middle-click",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     // Hover primitives
@@ -605,8 +664,8 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             .unwrap_or(0);
                         s.last_click_time_ms = now_ms;
 
-                        window.set_visible(false);
                         emit_click(&input_device, &window, s.mode, btn, s.point);
+                        window.set_visible(false);
 
                         let w_clone = window.clone();
                         let da_clone = drawing_area.clone();
@@ -705,10 +764,11 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     dismiss_overlay(&window, &app, is_resident);
                     return glib::Propagation::Stop;
                 }
-                dismiss_overlay(&window, &app, is_resident);
                 emit_selection(
                     &input_device,
                     &window,
+                    &app,
+                    is_resident,
                     s.mode,
                     &s.path,
                     if is_shift {
@@ -1079,11 +1139,28 @@ fn map_window_to_screen(
     };
 
     let geom = monitor.geometry();
-    let win_w = f64::from(window.width().max(1));
-    let win_h = f64::from(window.height().max(1));
+    let raw_w = window.width();
+    let raw_h = window.height();
 
-    let offset_y = f64::from((geom.height() - window.height()).max(0));
-    let offset_x = f64::from((geom.width() - window.width()).max(0));
+    let (win_w, offset_x) = if raw_w > 0 {
+        (
+            f64::from(raw_w),
+            f64::from((geom.width() - raw_w).max(0)),
+        )
+    } else {
+        (f64::from(geom.width()), 0.0)
+    };
+
+    let (win_h, offset_y) = if raw_h > 0 {
+        (
+            f64::from(raw_h),
+            f64::from((geom.height() - raw_h).max(0)),
+        )
+    } else {
+        // When unmapped or hidden, GTK 4 reports 0 for window dimensions.
+        // Fall back to standard workarea (monitor height minus top panel e.g. 29px)
+        (f64::from(geom.height() - 29), 29.0)
+    };
 
     let pixel_x = win_norm_x * win_w;
     let pixel_y = win_norm_y * win_h;
@@ -1143,6 +1220,8 @@ fn nudge_reticle(
 fn emit_selection(
     input_device: &Rc<RefCell<Option<InputDevice>>>,
     window: &gtk4::ApplicationWindow,
+    app: &gtk4::Application,
+    is_resident: bool,
     mode: OverlayMode,
     path: &[char],
     action: &str,
@@ -1152,6 +1231,7 @@ fn emit_selection(
         || map_window_to_screen(window, mode, 0.5, 0.5),
         |(nx, ny)| map_window_to_screen(window, mode, nx, ny),
     );
+    dismiss_overlay(window, app, is_resident);
 
     let evt = OverlayEvent::Selected {
         strokes: path.iter().collect(),
