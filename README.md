@@ -97,7 +97,7 @@ Press **`Super+Shift+M`** (or run `notmouse overlay`) to summon the overlay.
 | `c` | Grid / Roam | **Click & Stay**: Click target with animated ripple; keep overlay active |
 | `p` | Grid / Roam | **Point & Hover**: Dismiss overlay and leave cursor parked without clicking |
 | `P` | Grid | **Hover & Stay**: Park cursor, conceal overlay for 120 ms to reveal flyout menus, and re-present with refreshed scan |
-| `f` | Grid / Locked | Enter **Free Roam Mode**: 60 Hz kinematic cursor glide |
+| `z` / `Shift+F` (Grid) / `f` (Locked) | Grid / Locked | Enter **Free Roam Mode**: 60 Hz kinematic cursor glide across full canvas |
 | `h` `j` `k` `l` / Arrows | Roam / Locked | Kinematic glide / micro-nudge (Tap: 2.5 px; Hold: quadratic acceleration up to 2400 px/s) |
 | `Shift` (hold) | Roam / Scroll | 2.5× Turbo speed multiplier |
 | `Ctrl` / `Alt` (hold) | Roam | 0.35× Crawl precision dampening |
