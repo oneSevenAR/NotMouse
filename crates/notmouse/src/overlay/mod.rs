@@ -975,6 +975,7 @@ fn setup_overlay_socket(
             {
                 let mut s = state.borrow_mut();
                 s.target_pid = target_pid;
+                s.cached_elements.clear();
                 s.mode = OverlayMode::Grid;
                 s.path.clear();
                 s.rect = Rect {

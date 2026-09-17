@@ -1,4 +1,3 @@
-pub use atspi::connection::AccessibilityConnection;
 use atspi::proxy::accessible::AccessibleProxy;
 use atspi::proxy::component::ComponentProxy;
 use serde::{Deserialize, Serialize};
@@ -69,8 +68,10 @@ const CONTROL_ROLES: &[&str] = &[
     "combo box",
     "button",
     "table cell",
+    "table row",
     "list item",
     "tree item",
+    "icon",
 ];
 
 const IGNORED_APPS: &[&str] = &[
@@ -87,13 +88,42 @@ const IGNORED_APPS: &[&str] = &[
     "io.github.onesevenar.notmouse.overlay",
 ];
 
-pub struct Scanner {
-    conn: Arc<AccessibilityConnection>,
+fn is_ignored_pid(pid: u32) -> bool {
+    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        let comm = comm.trim().to_ascii_lowercase();
+        const IGNORED: &[&str] = &[
+            "gnome-shell",
+            "ibus-",
+            "evolution-",
+            "gpaste-",
+            "xdg-desktop-",
+            "update-notifier",
+            "mutter-",
+            "gjs",
+            "notmouse",
+        ];
+        if IGNORED.iter().any(|&ig| comm.starts_with(ig)) {
+            return true;
+        }
+    }
+    false
 }
 
-pub async fn get_active_window_pid(conn: &AccessibilityConnection) -> Option<u32> {
-    let dbus = zbus::fdo::DBusProxy::new(conn.connection()).await.ok()?;
-    let root = AccessibleProxy::builder(conn.connection())
+pub async fn connect_a11y() -> Result<zbus::Connection, Box<dyn std::error::Error + Send + Sync>> {
+    let session_bus = zbus::Connection::session().await?;
+    let proxy = zbus::Proxy::new(&session_bus, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus").await?;
+    let addr: String = proxy.call("GetAddress", &()).await?;
+    let a11y_conn = zbus::connection::Builder::address(addr.as_str())?.build().await?;
+    Ok(a11y_conn)
+}
+
+pub struct Scanner {
+    conn: Arc<zbus::Connection>,
+}
+
+pub async fn get_active_window_pid(conn: &zbus::Connection) -> Option<u32> {
+    let dbus = zbus::fdo::DBusProxy::new(conn).await.ok()?;
+    let root = AccessibleProxy::builder(conn)
         .destination("org.a11y.atspi.Registry")
         .ok()?
         .path("/org/a11y/atspi/accessible/root")
@@ -102,10 +132,25 @@ pub async fn get_active_window_pid(conn: &AccessibilityConnection) -> Option<u32
         .await
         .ok()?;
     let children = root.get_children().await.ok()?;
+    let mut browser_fallback_pid = None;
+
     for child in children {
-        let name = child.name()?;
+        let Some(name) = child.name() else {
+            continue;
+        };
         let bus_name = name.as_str();
-        let Ok(app_proxy) = AccessibleProxy::builder(conn.connection())
+        let Ok(parsed_bus) = zbus::names::BusName::try_from(bus_name) else {
+            continue;
+        };
+        let pid = dbus
+            .get_connection_unix_process_id(parsed_bus)
+            .await
+            .unwrap_or(0);
+        if pid == 0 || is_ignored_pid(pid) {
+            continue;
+        }
+
+        let Ok(app_proxy) = AccessibleProxy::builder(conn)
             .destination(bus_name)
             .ok()?
             .path(child.path().as_str())
@@ -125,8 +170,12 @@ pub async fn get_active_window_pid(conn: &AccessibilityConnection) -> Option<u32
         let Ok(frames) = app_proxy.get_children().await else {
             continue;
         };
+        let is_browser = app_name.eq_ignore_ascii_case("librewolf")
+            || app_name.eq_ignore_ascii_case("firefox")
+            || app_name.to_lowercase().contains("chrome");
+
         for frame_ref in frames {
-            let Ok(frame_proxy) = AccessibleProxy::builder(conn.connection())
+            let Ok(frame_proxy) = AccessibleProxy::builder(conn)
                 .destination(bus_name)
                 .ok()?
                 .path(frame_ref.path().as_str())
@@ -137,71 +186,23 @@ pub async fn get_active_window_pid(conn: &AccessibilityConnection) -> Option<u32
                 continue;
             };
             let state = frame_proxy.get_state().await.unwrap_or_default();
-            if state.contains(atspi::State::Active)
-                && let Ok(parsed_bus) = zbus::names::BusName::try_from(bus_name)
-                && let Ok(pid) = dbus.get_connection_unix_process_id(parsed_bus).await
-                && pid > 0
-            {
+            if state.contains(atspi::State::Active) || state.contains(atspi::State::Focused) {
                 return Some(pid);
             }
-        }
-    }
-    None
-}
-
-async fn find_inner_label_bounds(
-    conn: &zbus::Connection,
-    bus_name: &str,
-    parent_path: &str,
-    depth: usize,
-) -> Option<(f64, f64, f64, f64)> {
-    if depth > 6 {
-        return None;
-    }
-    let parent_proxy = AccessibleProxy::builder(conn)
-        .destination(bus_name)
-        .ok()?
-        .path(parent_path)
-        .ok()?
-        .build()
-        .await
-        .ok()?;
-    let role = parent_proxy.get_role_name().await.unwrap_or_default();
-    if (role == "label" || role == "text")
-        && !parent_proxy.name().await.unwrap_or_default().is_empty()
-        && let Ok(comp) = ComponentProxy::builder(conn)
-            .destination(bus_name)
-            .ok()?
-            .path(parent_path)
-            .ok()?
-            .build()
-            .await
-        && let Ok((x, y, w, h)) = comp.get_extents(atspi::CoordType::Window).await
-        && w > 0
-        && h > 0
-    {
-        return Some((f64::from(x), f64::from(y), f64::from(w), f64::from(h)));
-    }
-    if let Ok(children) = parent_proxy.get_children().await {
-        for child in children.into_iter().take(10) {
-            if let Some(res) = Box::pin(find_inner_label_bounds(
-                conn,
-                bus_name,
-                child.path().as_str(),
-                depth + 1,
-            ))
-            .await
+            if is_browser
+                && !state.contains(atspi::State::Iconified)
+                && (state.contains(atspi::State::Showing) || state.contains(atspi::State::Visible))
             {
-                return Some(res);
+                browser_fallback_pid = Some(pid);
             }
         }
     }
-    None
+    browser_fallback_pid
 }
 
 impl Scanner {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let conn = AccessibilityConnection::new().await?;
+        let conn = connect_a11y().await?;
         Ok(Self {
             conn: Arc::new(conn),
         })
@@ -212,7 +213,7 @@ impl Scanner {
         target_pid: Option<u32>,
         bounds: Option<(f64, f64, f64, f64)>,
     ) -> Vec<AccessibleElement> {
-        let root = match AccessibleProxy::builder(self.conn.connection())
+        let root = match AccessibleProxy::builder(&self.conn)
             .destination("org.a11y.atspi.Registry")
             .ok()
             .and_then(|b| b.path("/org/a11y/atspi/accessible/root").ok())
@@ -228,7 +229,7 @@ impl Scanner {
             return Vec::new();
         };
 
-        let dbus_proxy = zbus::fdo::DBusProxy::new(self.conn.connection()).await.ok();
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&self.conn).await.ok();
         let mut target_app = None;
 
         // 1. If target_pid is specified, match the exact process
@@ -249,7 +250,7 @@ impl Scanner {
                     0
                 };
                 if pid == t_pid {
-                    let Some(app_builder) = AccessibleProxy::builder(self.conn.connection())
+                    let Some(app_builder) = AccessibleProxy::builder(&self.conn)
                         .destination(bus_name)
                         .ok()
                         .and_then(|b| b.path(child.path().as_str()).ok())
@@ -289,7 +290,21 @@ impl Scanner {
                     continue;
                 };
                 let bus_name = name.as_str();
-                let Some(app_builder) = AccessibleProxy::builder(self.conn.connection())
+                let Ok(parsed_bus) = zbus::names::BusName::try_from(bus_name) else {
+                    continue;
+                };
+                let pid = if let Some(ref dbus) = dbus_proxy {
+                    dbus.get_connection_unix_process_id(parsed_bus)
+                        .await
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                if pid == 0 || is_ignored_pid(pid) {
+                    continue;
+                }
+
+                let Some(app_builder) = AccessibleProxy::builder(&self.conn)
                     .destination(bus_name)
                     .ok()
                     .and_then(|b| b.path(child.path().as_str()).ok())
@@ -314,22 +329,12 @@ impl Scanner {
                     continue;
                 }
 
-                let pid = if let (Some(dbus), Ok(parsed)) =
-                    (&dbus_proxy, zbus::names::BusName::try_from(bus_name))
-                {
-                    dbus.get_connection_unix_process_id(parsed)
-                        .await
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-
                 let mut valid_frames = Vec::new();
                 let mut score = 0;
 
                 for frame_ref in app_children {
                     let frame_path = frame_ref.path().to_string();
-                    let Some(frame_builder) = AccessibleProxy::builder(self.conn.connection())
+                    let Some(frame_builder) = AccessibleProxy::builder(&self.conn)
                         .destination(bus_name)
                         .ok()
                         .and_then(|b| b.path(frame_path.as_str()).ok())
@@ -350,7 +355,7 @@ impl Scanner {
                     }
 
                     // Check size
-                    if let Some(comp_builder) = ComponentProxy::builder(self.conn.connection())
+                    if let Some(comp_builder) = ComponentProxy::builder(&self.conn)
                         .destination(bus_name)
                         .ok()
                         .and_then(|b| b.path(frame_path.as_str()).ok())
@@ -372,13 +377,23 @@ impl Scanner {
                     valid_frames.push(frame_path);
                 }
 
-                if !valid_frames.is_empty() && score > 0 {
+                if !valid_frames.is_empty() {
+                    let is_browser = app_name.eq_ignore_ascii_case("librewolf")
+                        || app_name.eq_ignore_ascii_case("firefox")
+                        || app_name.to_lowercase().contains("chrome");
+                    let final_score = if score > 0 {
+                        score
+                    } else if is_browser {
+                        50
+                    } else {
+                        10
+                    };
                     candidates.push(AppCandidate {
                         app_name,
                         bus_name: bus_name.to_string(),
                         frames: valid_frames,
                         pid,
-                        score,
+                        score: final_score,
                     });
                 }
             }
@@ -406,7 +421,7 @@ impl Scanner {
             let mut fw = 99999.0;
             let mut fh = 99999.0;
 
-            if let Some(comp_builder) = ComponentProxy::builder(self.conn.connection())
+            if let Some(comp_builder) = ComponentProxy::builder(&self.conn)
                 .destination(bus_name.as_str())
                 .ok()
                 .and_then(|b| b.path(win_path.as_str()).ok())
@@ -477,7 +492,7 @@ impl Scanner {
             return;
         }
 
-        let Some(node_builder) = AccessibleProxy::builder(self.conn.connection())
+        let Some(node_builder) = AccessibleProxy::builder(&self.conn)
             .destination(bus_name)
             .ok()
             .and_then(|b| b.path(path).ok())
@@ -491,7 +506,7 @@ impl Scanner {
 
         // Check extents relative to window
         let mut node_bounds = None;
-        if let Some(comp_builder) = ComponentProxy::builder(self.conn.connection())
+        if let Some(comp_builder) = ComponentProxy::builder(&self.conn)
             .destination(bus_name)
             .ok()
             .and_then(|b| b.path(path).ok())
@@ -525,30 +540,20 @@ impl Scanner {
                 && ((is_control && bw >= 10.0 && bh >= 10.0)
                     || (is_link && bw >= 18.0 && bh >= 12.0))
             {
-                // Wide element centering: for wide table cells / list items spanning full width,
-                // find inner label bounds or clamp width so the reticle targets the actual label/icon
+                // Wide element centering: for wide table cells / rows / list items spanning full width,
+                // clamp width so the reticle targets the actual label/icon at the start of the item
                 let (elem_x, elem_y, elem_w, elem_h, elem_cx, elem_cy) =
-                    if (role == "table cell" || role == "list item" || role == "tree item")
+                    if (role == "table cell"
+                        || role == "table row"
+                        || role == "list item"
+                        || role == "tree item")
                         && bw > 120.0
                     {
-                        if let Some((lx, ly, lw, lh)) =
-                            find_inner_label_bounds(self.conn.connection(), bus_name, path, 0).await
-                        {
-                            let start_x = bx.max(lx - 24.0);
-                            let end_x = lx + lw;
-                            let cell_w = (end_x - start_x).max(10.0);
-                            let ex = frame_x + start_x;
-                            let ey = frame_y + ly;
-                            let ew = cell_w;
-                            let eh = lh;
-                            (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
-                        } else {
-                            let ex = frame_x + bx;
-                            let ey = frame_y + by;
-                            let ew = bw.min(180.0);
-                            let eh = bh;
-                            (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
-                        }
+                        let ew = bw.min(240.0);
+                        let ex = frame_x + bx;
+                        let ey = frame_y + by;
+                        let eh = bh;
+                        (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
                     } else {
                         let ex = frame_x + bx;
                         let ey = frame_y + by;
@@ -758,13 +763,12 @@ mod tests {
 
     #[test]
     fn test_get_active_window_pid() {
-        let Ok(_) = zbus::block_on(async {
-            let conn = AccessibilityConnection::new().await?;
+        let _ = zbus::block_on(async {
+            let conn = connect_a11y().await?;
             let pid = get_active_window_pid(&conn).await;
-            println!("Active window PID: {pid:?}");
+            eprintln!("Active window PID: {pid:?}");
+            assert!(pid.is_some(), "Expected an active window PID");
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        }) else {
-            return;
-        };
+        });
     }
 }
