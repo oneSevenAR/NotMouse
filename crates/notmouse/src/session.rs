@@ -205,10 +205,12 @@ pub fn execute_event(device: &mut InputDevice, event: &OverlayEvent) -> Result<(
                 .map_err(|e| format!("live release failed: {e}"))?;
         }
         OverlayEvent::Click { button, normalized } => {
+            // Wait briefly for Mutter to unmap the overlay if it was just hidden
+            thread::sleep(Duration::from_millis(70));
             if let Some(p) = normalized {
                 println!("!mouse: live click '{button}' at ({:.3}, {:.3})", p.x, p.y);
                 let _ = device.move_to_normalized(p.x, p.y);
-                thread::sleep(Duration::from_millis(10));
+                thread::sleep(Duration::from_millis(40));
             } else {
                 println!("!mouse: live click '{button}' at current position");
             }

@@ -292,35 +292,34 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             dismiss_overlay(&window, &app, is_resident);
                             return glib::Propagation::Stop;
                         }
-                        emit_click(
+                        dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(
                             &input_device,
                             &window,
                             s.mode,
+                            &s.path,
                             if is_shift {
-                                MouseButton::Right
+                                "right-click"
                             } else {
-                                MouseButton::Left
+                                "click"
                             },
                             s.point,
                         );
-                        dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::r => {
-                        emit_click(&input_device, &window, s.mode, MouseButton::Right, s.point);
                         dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(&input_device, &window, s.mode, &s.path, "right-click", s.point);
                         return glib::Propagation::Stop;
                     }
                     Key::d => {
-                        emit_click(&input_device, &window, s.mode, MouseButton::Left, s.point);
-                        std::thread::sleep(Duration::from_millis(50));
-                        emit_click(&input_device, &window, s.mode, MouseButton::Left, s.point);
                         dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(&input_device, &window, s.mode, &s.path, "double-click", s.point);
                         return glib::Propagation::Stop;
                     }
                     Key::m => {
-                        emit_click(&input_device, &window, s.mode, MouseButton::Middle, s.point);
                         dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(&input_device, &window, s.mode, &s.path, "middle-click", s.point);
                         return glib::Propagation::Stop;
                     }
                     Key::v => {
@@ -398,43 +397,49 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         return glib::Propagation::Stop;
                     }
                     Key::Return | Key::KP_Enter | Key::space => {
-                        emit_click(
+                        dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(
                             &input_device,
                             &window,
                             s.mode,
+                            &s.path,
                             if is_shift {
-                                MouseButton::Right
+                                "right-click"
                             } else {
-                                MouseButton::Left
+                                "click"
                             },
                             s.point,
                         );
-                        dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::r => {
-                        emit_click(&input_device, &window, s.mode, MouseButton::Right, s.point);
                         dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(&input_device, &window, s.mode, &s.path, "right-click", s.point);
                         return glib::Propagation::Stop;
                     }
                     Key::c => {
-                        emit_click(
-                            &input_device,
-                            &window,
-                            s.mode,
-                            if is_shift {
-                                MouseButton::Right
-                            } else {
-                                MouseButton::Left
-                            },
-                            s.point,
-                        );
+                        let btn = if is_shift {
+                            MouseButton::Right
+                        } else {
+                            MouseButton::Left
+                        };
+                        window.set_visible(false);
+                        emit_click(&input_device, &window, s.mode, btn, s.point);
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or(0);
                         s.last_click_time_ms = now_ms;
-                        drawing_area.queue_draw();
+
+                        let w_clone = window.clone();
+                        let da_clone = drawing_area.clone();
+                        glib::timeout_add_local(Duration::from_millis(180), move || {
+                            w_clone.set_visible(true);
+                            w_clone.present();
+                            da_clone.grab_focus();
+                            da_clone.queue_draw();
+                            glib::ControlFlow::Break
+                        });
                         return glib::Propagation::Stop;
                     }
                     Key::a => {
@@ -502,35 +507,34 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             dismiss_overlay(&window, &app, is_resident);
                             return glib::Propagation::Stop;
                         }
-                        emit_click(
+                        dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(
                             &input_device,
                             &window,
                             s.mode,
+                            &s.path,
                             if is_shift {
-                                MouseButton::Right
+                                "right-click"
                             } else {
-                                MouseButton::Left
+                                "click"
                             },
                             s.point,
                         );
-                        dismiss_overlay(&window, &app, is_resident);
                         return glib::Propagation::Stop;
                     }
                     Key::r => {
-                        emit_click(&input_device, &window, s.mode, MouseButton::Right, s.point);
                         dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(&input_device, &window, s.mode, &s.path, "right-click", s.point);
                         return glib::Propagation::Stop;
                     }
                     Key::d => {
-                        emit_click(&input_device, &window, s.mode, MouseButton::Left, s.point);
-                        std::thread::sleep(Duration::from_millis(50));
-                        emit_click(&input_device, &window, s.mode, MouseButton::Left, s.point);
                         dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(&input_device, &window, s.mode, &s.path, "double-click", s.point);
                         return glib::Propagation::Stop;
                     }
                     Key::m => {
-                        emit_click(&input_device, &window, s.mode, MouseButton::Middle, s.point);
                         dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(&input_device, &window, s.mode, &s.path, "middle-click", s.point);
                         return glib::Propagation::Stop;
                     }
                     // Hover primitives
@@ -591,6 +595,10 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         } else {
                             MouseButton::Left
                         };
+                        let was_link = s
+                            .snapped_element
+                            .as_ref()
+                            .is_some_and(|e| e.is_link);
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
@@ -604,7 +612,8 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         let da_clone = drawing_area.clone();
                         let s_clone = state.clone();
 
-                        glib::timeout_add_local(Duration::from_millis(60), move || {
+                        let restore_delay_ms = if was_link { 600 } else { 180 };
+                        glib::timeout_add_local(Duration::from_millis(restore_delay_ms), move || {
                             w_clone.set_visible(true);
                             w_clone.present();
                             da_clone.grab_focus();
@@ -650,9 +659,8 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
 
                             let win_w = f64::from(window.width());
                             let win_h = f64::from(window.height());
-                            let (offset_x, offset_y) = get_window_offsets(&window);
-                            let nx = ((candidate.cx - offset_x) / win_w).clamp(0.0, 1.0);
-                            let ny = ((candidate.cy - offset_y) / win_h).clamp(0.0, 1.0);
+                            let nx = (candidate.cx / win_w).clamp(0.0, 1.0);
+                            let ny = (candidate.cy / win_h).clamp(0.0, 1.0);
                             s.point = Some((nx, ny));
 
                             // Live pointer coupling on cycle!
@@ -697,18 +705,19 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     dismiss_overlay(&window, &app, is_resident);
                     return glib::Propagation::Stop;
                 }
-                emit_click(
+                dismiss_overlay(&window, &app, is_resident);
+                emit_selection(
                     &input_device,
                     &window,
                     s.mode,
+                    &s.path,
                     if is_shift {
-                        MouseButton::Right
+                        "right-click"
                     } else {
-                        MouseButton::Left
+                        "click"
                     },
                     s.point,
                 );
-                dismiss_overlay(&window, &app, is_resident);
                 return glib::Propagation::Stop;
             }
 
@@ -772,14 +781,13 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
             if s.path.len() >= 2 {
                 let win_w = f64::from(window.width().max(1));
                 let win_h = f64::from(window.height().max(1));
-                let (offset_x, offset_y) = get_window_offsets(&window);
 
-                let target_px_x = offset_x + center_x * win_w;
-                let target_px_y = offset_y + center_y * win_h;
-                let cell_min_x = offset_x + s.rect.x * win_w;
-                let cell_max_x = offset_x + (s.rect.x + s.rect.width) * win_w;
-                let cell_min_y = offset_y + s.rect.y * win_h;
-                let cell_max_y = offset_y + (s.rect.y + s.rect.height) * win_h;
+                let target_px_x = center_x * win_w;
+                let target_px_y = center_y * win_h;
+                let cell_min_x = s.rect.x * win_w;
+                let cell_max_x = (s.rect.x + s.rect.width) * win_w;
+                let cell_min_y = s.rect.y * win_h;
+                let cell_max_y = (s.rect.y + s.rect.height) * win_h;
 
                 let snap_res = atspi::snap_to_nearest(
                     &s.cached_elements,
@@ -792,8 +800,8 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                 );
 
                 if let Some(candidate) = snap_res.candidate {
-                    let nx = ((candidate.cx - offset_x) / win_w).clamp(0.0, 1.0);
-                    let ny = ((candidate.cy - offset_y) / win_h).clamp(0.0, 1.0);
+                    let nx = (candidate.cx / win_w).clamp(0.0, 1.0);
+                    let ny = (candidate.cy / win_h).clamp(0.0, 1.0);
                     s.point = Some((nx, ny));
                     s.snapped_element = Some(candidate);
                     s.snap_candidates = snap_res.all_candidates;
@@ -962,18 +970,17 @@ fn trigger_background_scan(
             if s.path.len() >= 2 && s.snapped_element.is_none() {
                 let win_w = f64::from(win.width().max(1));
                 let win_h = f64::from(win.height().max(1));
-                let (offset_x, offset_y) = get_window_offsets(&win);
                 let (center_x, center_y) = s.point.unwrap_or((
                     s.rect.x + s.rect.width / 2.0,
                     s.rect.y + s.rect.height / 2.0,
                 ));
 
-                let target_px_x = offset_x + center_x * win_w;
-                let target_px_y = offset_y + center_y * win_h;
-                let cell_min_x = offset_x + s.rect.x * win_w;
-                let cell_max_x = offset_x + (s.rect.x + s.rect.width) * win_w;
-                let cell_min_y = offset_y + s.rect.y * win_h;
-                let cell_max_y = offset_y + (s.rect.y + s.rect.height) * win_h;
+                let target_px_x = center_x * win_w;
+                let target_px_y = center_y * win_h;
+                let cell_min_x = s.rect.x * win_w;
+                let cell_max_x = (s.rect.x + s.rect.width) * win_w;
+                let cell_min_y = s.rect.y * win_h;
+                let cell_max_y = (s.rect.y + s.rect.height) * win_h;
 
                 let snap_res = atspi::snap_to_nearest(
                     &s.cached_elements,
@@ -985,8 +992,8 @@ fn trigger_background_scan(
                     cell_max_y,
                 );
                 if let Some(candidate) = snap_res.candidate {
-                    let nx = ((candidate.cx - offset_x) / win_w).clamp(0.0, 1.0);
-                    let ny = ((candidate.cy - offset_y) / win_h).clamp(0.0, 1.0);
+                    let nx = (candidate.cx / win_w).clamp(0.0, 1.0);
+                    let ny = (candidate.cy / win_h).clamp(0.0, 1.0);
                     s.point = Some((nx, ny));
                     s.snapped_element = Some(candidate);
                     s.snap_candidates = snap_res.all_candidates;
@@ -1061,20 +1068,6 @@ fn get_desktop_bounds() -> (f64, f64, f64, f64) {
     )
 }
 
-fn get_window_offsets(window: &gtk4::ApplicationWindow) -> (f64, f64) {
-    if let Some(m) = get_active_monitor(Some(window)) {
-        let geom = m.geometry();
-        let offset_x = f64::from((geom.width() - window.width()).max(0));
-        let offset_y = f64::from((geom.height() - window.height()).max(0));
-        (
-            f64::from(geom.x()) + offset_x,
-            f64::from(geom.y()) + offset_y,
-        )
-    } else {
-        (0.0, 0.0)
-    }
-}
-
 fn map_window_to_screen(
     window: &gtk4::ApplicationWindow,
     mode: OverlayMode,
@@ -1147,6 +1140,39 @@ fn nudge_reticle(
     emit_cursor_move(input_device, window, s.mode, nx, ny);
 }
 
+fn emit_selection(
+    input_device: &Rc<RefCell<Option<InputDevice>>>,
+    window: &gtk4::ApplicationWindow,
+    mode: OverlayMode,
+    path: &[char],
+    action: &str,
+    point: Option<(f64, f64)>,
+) {
+    let (screen_x, screen_y) = point.map_or_else(
+        || map_window_to_screen(window, mode, 0.5, 0.5),
+        |(nx, ny)| map_window_to_screen(window, mode, nx, ny),
+    );
+
+    let evt = OverlayEvent::Selected {
+        strokes: path.iter().collect(),
+        action: action.to_string(),
+        normalized: crate::NormalizedPoint {
+            x: screen_x,
+            y: screen_y,
+        },
+    };
+    if crate::session::send_event(&evt).unwrap_or(false) {
+        return;
+    }
+    if let Some(ref mut dev) = *input_device.borrow_mut() {
+        std::thread::sleep(Duration::from_millis(120));
+        let _ = dev.move_to_normalized(screen_x, screen_y);
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = crate::session::execute_action(dev, action);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 fn emit_click(
     input_device: &Rc<RefCell<Option<InputDevice>>>,
     window: &gtk4::ApplicationWindow,
@@ -1167,8 +1193,10 @@ fn emit_click(
         return;
     }
     if let Some(ref mut dev) = *input_device.borrow_mut() {
+        std::thread::sleep(Duration::from_millis(70));
         if let Some((sx, sy)) = screen_coords {
             let _ = dev.move_to_normalized(sx, sy);
+            std::thread::sleep(Duration::from_millis(40));
         }
         let _ = dev.click(button);
     }
