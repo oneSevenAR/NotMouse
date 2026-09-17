@@ -299,11 +299,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             is_resident,
                             s.mode,
                             &s.path,
-                            if is_shift {
-                                "right-click"
-                            } else {
-                                "click"
-                            },
+                            if is_shift { "right-click" } else { "click" },
                             s.point,
                         );
                         return glib::Propagation::Stop;
@@ -429,11 +425,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             is_resident,
                             s.mode,
                             &s.path,
-                            if is_shift {
-                                "right-click"
-                            } else {
-                                "click"
-                            },
+                            if is_shift { "right-click" } else { "click" },
                             s.point,
                         );
                         return glib::Propagation::Stop;
@@ -548,11 +540,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             is_resident,
                             s.mode,
                             &s.path,
-                            if is_shift {
-                                "right-click"
-                            } else {
-                                "click"
-                            },
+                            if is_shift { "right-click" } else { "click" },
                             s.point,
                         );
                         return glib::Propagation::Stop;
@@ -654,10 +642,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         } else {
                             MouseButton::Left
                         };
-                        let was_link = s
-                            .snapped_element
-                            .as_ref()
-                            .is_some_and(|e| e.is_link);
+                        let was_link = s.snapped_element.as_ref().is_some_and(|e| e.is_link);
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
@@ -672,14 +657,17 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         let s_clone = state.clone();
 
                         let restore_delay_ms = if was_link { 600 } else { 180 };
-                        glib::timeout_add_local(Duration::from_millis(restore_delay_ms), move || {
-                            w_clone.set_visible(true);
-                            w_clone.present();
-                            da_clone.grab_focus();
-                            da_clone.queue_draw();
-                            trigger_background_scan(&s_clone, &da_clone, &w_clone);
-                            glib::ControlFlow::Break
-                        });
+                        glib::timeout_add_local(
+                            Duration::from_millis(restore_delay_ms),
+                            move || {
+                                w_clone.set_visible(true);
+                                w_clone.present();
+                                da_clone.grab_focus();
+                                da_clone.queue_draw();
+                                trigger_background_scan(&s_clone, &da_clone, &w_clone);
+                                glib::ControlFlow::Break
+                            },
+                        );
                         return glib::Propagation::Stop;
                     }
                     // Click & Drag (v)
@@ -771,11 +759,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     is_resident,
                     s.mode,
                     &s.path,
-                    if is_shift {
-                        "right-click"
-                    } else {
-                        "click"
-                    },
+                    if is_shift { "right-click" } else { "click" },
                     s.point,
                 );
                 return glib::Propagation::Stop;
@@ -1144,19 +1128,13 @@ fn map_window_to_screen(
     let raw_h = window.height();
 
     let (win_w, offset_x) = if raw_w > 0 {
-        (
-            f64::from(raw_w),
-            f64::from((geom.width() - raw_w).max(0)),
-        )
+        (f64::from(raw_w), f64::from((geom.width() - raw_w).max(0)))
     } else {
         (f64::from(geom.width()), 0.0)
     };
 
     let (win_h, offset_y) = if raw_h > 0 {
-        (
-            f64::from(raw_h),
-            f64::from((geom.height() - raw_h).max(0)),
-        )
+        (f64::from(raw_h), f64::from((geom.height() - raw_h).max(0)))
     } else {
         // When unmapped or hidden, GTK 4 reports 0 for window dimensions.
         // Fall back to standard workarea (monitor height minus top panel e.g. 29px)

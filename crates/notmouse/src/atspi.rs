@@ -111,9 +111,17 @@ fn is_ignored_pid(pid: u32) -> bool {
 
 pub async fn connect_a11y() -> Result<zbus::Connection, Box<dyn std::error::Error + Send + Sync>> {
     let session_bus = zbus::Connection::session().await?;
-    let proxy = zbus::Proxy::new(&session_bus, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus").await?;
+    let proxy = zbus::Proxy::new(
+        &session_bus,
+        "org.a11y.Bus",
+        "/org/a11y/bus",
+        "org.a11y.Bus",
+    )
+    .await?;
     let addr: String = proxy.call("GetAddress", &()).await?;
-    let a11y_conn = zbus::connection::Builder::address(addr.as_str())?.build().await?;
+    let a11y_conn = zbus::connection::Builder::address(addr.as_str())?
+        .build()
+        .await?;
     Ok(a11y_conn)
 }
 
@@ -542,25 +550,24 @@ impl Scanner {
             {
                 // Wide element centering: for wide table cells / rows / list items spanning full width,
                 // clamp width so the reticle targets the actual label/icon at the start of the item
-                let (elem_x, elem_y, elem_w, elem_h, elem_cx, elem_cy) =
-                    if (role == "table cell"
-                        || role == "table row"
-                        || role == "list item"
-                        || role == "tree item")
-                        && bw > 120.0
-                    {
-                        let ew = bw.min(240.0);
-                        let ex = frame_x + bx;
-                        let ey = frame_y + by;
-                        let eh = bh;
-                        (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
-                    } else {
-                        let ex = frame_x + bx;
-                        let ey = frame_y + by;
-                        let ew = bw;
-                        let eh = bh;
-                        (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
-                    };
+                let (elem_x, elem_y, elem_w, elem_h, elem_cx, elem_cy) = if (role == "table cell"
+                    || role == "table row"
+                    || role == "list item"
+                    || role == "tree item")
+                    && bw > 120.0
+                {
+                    let ew = bw.min(240.0);
+                    let ex = frame_x + bx;
+                    let ey = frame_y + by;
+                    let eh = bh;
+                    (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
+                } else {
+                    let ex = frame_x + bx;
+                    let ey = frame_y + by;
+                    let ew = bw;
+                    let eh = bh;
+                    (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
+                };
 
                 // Check bounds filter
                 let in_bounds = if let Some((bx1, bx2, by1, by2)) = bounds {
