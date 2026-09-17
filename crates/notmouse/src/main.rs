@@ -176,10 +176,13 @@ fn print_help() {
 
 struct DaemonGuard {
     warm_overlay: Option<std::process::Child>,
+    monitor_running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
+        self.monitor_running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(mut child) = self.warm_overlay.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -219,9 +222,40 @@ fn run_daemon() -> Result<(), String> {
         .spawn()
         .ok();
 
+    // Start background AT-SPI active window monitor so the overlay always knows the foreground app
+    println!("!mouse: starting native AT-SPI foreground application tracker...");
+    let monitor_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let m_running = monitor_running.clone();
+    std::thread::spawn(move || {
+        let rt = match zbus::block_on(atspi::AccessibilityConnection::new()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("!mouse: active window monitor failed to connect to AT-SPI: {e}");
+                return;
+            }
+        };
+        let pid_path = session::active_pid_path();
+        let mut last_pid = 0;
+        while m_running.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(200));
+            if let Some(pid) = zbus::block_on(atspi::get_active_window_pid(&rt))
+                && pid != last_pid
+            {
+                last_pid = pid;
+                let tmp = pid_path.with_extension("tmp");
+                if std::fs::write(&tmp, format!("{pid}\n")).is_ok() {
+                    let _ = std::fs::rename(&tmp, &pid_path);
+                }
+            }
+        }
+    });
+
     println!("!mouse: compositor binding warm and permanent. Press Ctrl+C to terminate.");
 
-    let mut guard = DaemonGuard { warm_overlay };
+    let mut guard = DaemonGuard {
+        warm_overlay,
+        monitor_running,
+    };
     loop {
         thread::sleep(Duration::from_secs(5));
         if let Some(ref mut child) = guard.warm_overlay

@@ -770,26 +770,16 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
 
             // Stroke 2 entered: attempt magnetic snap to element!
             if s.path.len() >= 2 {
-                let win_w = f64::from(window.width());
-                let win_h = f64::from(window.height());
-                let (screen_target_x, screen_target_y) =
-                    map_window_to_screen(&window, s.mode, center_x, center_y);
-                let (screen_cell_min_x, screen_cell_min_y) =
-                    map_window_to_screen(&window, s.mode, s.rect.x, s.rect.y);
-                let (screen_cell_max_x, screen_cell_max_y) = map_window_to_screen(
-                    &window,
-                    s.mode,
-                    s.rect.x + s.rect.width,
-                    s.rect.y + s.rect.height,
-                );
+                let win_w = f64::from(window.width().max(1));
+                let win_h = f64::from(window.height().max(1));
+                let (offset_x, offset_y) = get_window_offsets(&window);
 
-                let (_, _, desk_w, desk_h) = get_desktop_bounds();
-                let target_px_x = screen_target_x * desk_w;
-                let target_px_y = screen_target_y * desk_h;
-                let cell_min_x = screen_cell_min_x * desk_w;
-                let cell_max_x = screen_cell_max_x * desk_w;
-                let cell_min_y = screen_cell_min_y * desk_h;
-                let cell_max_y = screen_cell_max_y * desk_h;
+                let target_px_x = offset_x + center_x * win_w;
+                let target_px_y = offset_y + center_y * win_h;
+                let cell_min_x = offset_x + s.rect.x * win_w;
+                let cell_max_x = offset_x + (s.rect.x + s.rect.width) * win_w;
+                let cell_min_y = offset_y + s.rect.y * win_h;
+                let cell_max_y = offset_y + (s.rect.y + s.rect.height) * win_h;
 
                 let snap_res = atspi::snap_to_nearest(
                     &s.cached_elements,
@@ -802,7 +792,6 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                 );
 
                 if let Some(candidate) = snap_res.candidate {
-                    let (offset_x, offset_y) = get_window_offsets(&window);
                     let nx = ((candidate.cx - offset_x) / win_w).clamp(0.0, 1.0);
                     let ny = ((candidate.cy - offset_y) / win_h).clamp(0.0, 1.0);
                     s.point = Some((nx, ny));
@@ -890,7 +879,13 @@ fn setup_overlay_socket(
         }
     };
 
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    #[derive(serde::Deserialize)]
+    struct OverlayShowMessage {
+        #[serde(default)]
+        target_pid: Option<u32>,
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel::<Option<u32>>();
 
     std::thread::spawn(move || {
         for mut s in listener.incoming().flatten() {
@@ -899,16 +894,19 @@ fn setup_overlay_socket(
             if let Ok(n) = s.read(&mut buf) {
                 let msg = String::from_utf8_lossy(&buf[..n]);
                 if msg.contains("\"show\"") {
-                    let _ = tx.send(());
+                    let req: Option<OverlayShowMessage> = serde_json::from_str(&msg).ok();
+                    let pid = req.and_then(|r| r.target_pid);
+                    let _ = tx.send(pid);
                 }
             }
         }
     });
 
     glib::timeout_add_local(Duration::from_millis(20), move || {
-        if rx.try_recv().is_ok() {
+        if let Ok(target_pid) = rx.try_recv() {
             {
                 let mut s = state.borrow_mut();
+                s.target_pid = target_pid;
                 s.mode = OverlayMode::Grid;
                 s.path.clear();
                 s.rect = Rect {
@@ -962,27 +960,20 @@ fn trigger_background_scan(
 
             // If already on Stroke 2, perform snap immediately
             if s.path.len() >= 2 && s.snapped_element.is_none() {
-                let win_w = f64::from(win.width());
-                let win_h = f64::from(win.height());
-                let (center_x, center_y) = s.point.unwrap_or((0.5, 0.5));
-                let (screen_target_x, screen_target_y) =
-                    map_window_to_screen(&win, s.mode, center_x, center_y);
-                let (screen_cell_min_x, screen_cell_min_y) =
-                    map_window_to_screen(&win, s.mode, s.rect.x, s.rect.y);
-                let (screen_cell_max_x, screen_cell_max_y) = map_window_to_screen(
-                    &win,
-                    s.mode,
-                    s.rect.x + s.rect.width,
-                    s.rect.y + s.rect.height,
-                );
+                let win_w = f64::from(win.width().max(1));
+                let win_h = f64::from(win.height().max(1));
+                let (offset_x, offset_y) = get_window_offsets(&win);
+                let (center_x, center_y) = s.point.unwrap_or((
+                    s.rect.x + s.rect.width / 2.0,
+                    s.rect.y + s.rect.height / 2.0,
+                ));
 
-                let (_, _, desk_w, desk_h) = get_desktop_bounds();
-                let target_px_x = screen_target_x * desk_w;
-                let target_px_y = screen_target_y * desk_h;
-                let cell_min_x = screen_cell_min_x * desk_w;
-                let cell_max_x = screen_cell_max_x * desk_w;
-                let cell_min_y = screen_cell_min_y * desk_h;
-                let cell_max_y = screen_cell_max_y * desk_h;
+                let target_px_x = offset_x + center_x * win_w;
+                let target_px_y = offset_y + center_y * win_h;
+                let cell_min_x = offset_x + s.rect.x * win_w;
+                let cell_max_x = offset_x + (s.rect.x + s.rect.width) * win_w;
+                let cell_min_y = offset_y + s.rect.y * win_h;
+                let cell_max_y = offset_y + (s.rect.y + s.rect.height) * win_h;
 
                 let snap_res = atspi::snap_to_nearest(
                     &s.cached_elements,
@@ -994,7 +985,6 @@ fn trigger_background_scan(
                     cell_max_y,
                 );
                 if let Some(candidate) = snap_res.candidate {
-                    let (offset_x, offset_y) = get_window_offsets(&win);
                     let nx = ((candidate.cx - offset_x) / win_w).clamp(0.0, 1.0);
                     let ny = ((candidate.cy - offset_y) / win_h).clamp(0.0, 1.0);
                     s.point = Some((nx, ny));

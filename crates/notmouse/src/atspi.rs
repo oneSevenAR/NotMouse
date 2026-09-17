@@ -1,4 +1,4 @@
-use atspi::connection::AccessibilityConnection;
+pub use atspi::connection::AccessibilityConnection;
 use atspi::proxy::accessible::AccessibleProxy;
 use atspi::proxy::component::ComponentProxy;
 use serde::{Deserialize, Serialize};
@@ -81,11 +81,122 @@ const IGNORED_APPS: &[&str] = &[
     "gpaste-daemon",
     "xdg-desktop-portal-gtk",
     "gnome-shell",
+    "mutter-x11-frames",
     "!mouse",
+    "notmouse",
+    "io.github.onesevenar.notmouse.overlay",
 ];
 
 pub struct Scanner {
     conn: Arc<AccessibilityConnection>,
+}
+
+pub async fn get_active_window_pid(conn: &AccessibilityConnection) -> Option<u32> {
+    let dbus = zbus::fdo::DBusProxy::new(conn.connection()).await.ok()?;
+    let root = AccessibleProxy::builder(conn.connection())
+        .destination("org.a11y.atspi.Registry")
+        .ok()?
+        .path("/org/a11y/atspi/accessible/root")
+        .ok()?
+        .build()
+        .await
+        .ok()?;
+    let children = root.get_children().await.ok()?;
+    for child in children {
+        let name = child.name()?;
+        let bus_name = name.as_str();
+        let Ok(app_proxy) = AccessibleProxy::builder(conn.connection())
+            .destination(bus_name)
+            .ok()?
+            .path(child.path().as_str())
+            .ok()?
+            .build()
+            .await
+        else {
+            continue;
+        };
+        let app_name = app_proxy.name().await.unwrap_or_default();
+        if IGNORED_APPS
+            .iter()
+            .any(|&ig| app_name.eq_ignore_ascii_case(ig))
+        {
+            continue;
+        }
+        let Ok(frames) = app_proxy.get_children().await else {
+            continue;
+        };
+        for frame_ref in frames {
+            let Ok(frame_proxy) = AccessibleProxy::builder(conn.connection())
+                .destination(bus_name)
+                .ok()?
+                .path(frame_ref.path().as_str())
+                .ok()?
+                .build()
+                .await
+            else {
+                continue;
+            };
+            let state = frame_proxy.get_state().await.unwrap_or_default();
+            if state.contains(atspi::State::Active)
+                && let Ok(parsed_bus) = zbus::names::BusName::try_from(bus_name)
+                && let Ok(pid) = dbus.get_connection_unix_process_id(parsed_bus).await
+                && pid > 0
+            {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
+async fn find_inner_label_bounds(
+    conn: &zbus::Connection,
+    bus_name: &str,
+    parent_path: &str,
+    depth: usize,
+) -> Option<(f64, f64, f64, f64)> {
+    if depth > 6 {
+        return None;
+    }
+    let parent_proxy = AccessibleProxy::builder(conn)
+        .destination(bus_name)
+        .ok()?
+        .path(parent_path)
+        .ok()?
+        .build()
+        .await
+        .ok()?;
+    let role = parent_proxy.get_role_name().await.unwrap_or_default();
+    if (role == "label" || role == "text")
+        && !parent_proxy.name().await.unwrap_or_default().is_empty()
+        && let Ok(comp) = ComponentProxy::builder(conn)
+            .destination(bus_name)
+            .ok()?
+            .path(parent_path)
+            .ok()?
+            .build()
+            .await
+        && let Ok((x, y, w, h)) = comp.get_extents(atspi::CoordType::Window).await
+        && w > 0
+        && h > 0
+    {
+        return Some((f64::from(x), f64::from(y), f64::from(w), f64::from(h)));
+    }
+    if let Ok(children) = parent_proxy.get_children().await {
+        for child in children.into_iter().take(10) {
+            if let Some(res) = Box::pin(find_inner_label_bounds(
+                conn,
+                bus_name,
+                child.path().as_str(),
+                depth + 1,
+            ))
+            .await
+            {
+                return Some(res);
+            }
+        }
+    }
+    None
 }
 
 impl Scanner {
@@ -117,71 +228,210 @@ impl Scanner {
             return Vec::new();
         };
 
-        // Find primary app
+        let dbus_proxy = zbus::fdo::DBusProxy::new(self.conn.connection()).await.ok();
         let mut target_app = None;
-        for child in children {
-            let Some(name) = child.name() else {
-                continue;
-            };
-            let bus_name = name.as_str();
-            let path = child.path().as_str();
 
-            let Some(app_builder) = AccessibleProxy::builder(self.conn.connection())
-                .destination(bus_name)
-                .ok()
-                .and_then(|b| b.path(path).ok())
-            else {
-                continue;
-            };
-
-            let Ok(app_proxy) = app_builder.build().await else {
-                continue;
-            };
-            let app_name = app_proxy.name().await.unwrap_or_default();
-            if IGNORED_APPS
-                .iter()
-                .any(|&ig| app_name.eq_ignore_ascii_case(ig))
-            {
-                continue;
-            }
-
-            // Check PID if target_pid was provided
-            if let Some(pid) = target_pid {
-                // If we match PID, this is strictly our target app
-                let Ok(app_children) = app_proxy.get_children().await else {
+        // 1. If target_pid is specified, match the exact process
+        if let Some(t_pid) = target_pid {
+            for child in &children {
+                let Some(name) = child.name() else {
                     continue;
                 };
-                if !app_children.is_empty() {
-                    target_app = Some((app_name, bus_name.to_string(), app_children, pid));
-                    break;
-                }
-            } else {
-                // Fallback: choose first visible app with windows
-                let Ok(app_children) = app_proxy.get_children().await else {
+                let bus_name = name.as_str();
+                let Ok(parsed_bus) = zbus::names::BusName::try_from(bus_name) else {
                     continue;
                 };
-                if !app_children.is_empty() {
-                    target_app = Some((app_name, bus_name.to_string(), app_children, 0));
-                    break;
+                let pid = if let Some(ref dbus) = dbus_proxy {
+                    dbus.get_connection_unix_process_id(parsed_bus)
+                        .await
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                if pid == t_pid {
+                    let Some(app_builder) = AccessibleProxy::builder(self.conn.connection())
+                        .destination(bus_name)
+                        .ok()
+                        .and_then(|b| b.path(child.path().as_str()).ok())
+                    else {
+                        continue;
+                    };
+                    if let Ok(app_proxy) = app_builder.build().await {
+                        let app_name = app_proxy.name().await.unwrap_or_default();
+                        let app_children = app_proxy.get_children().await.unwrap_or_default();
+                        if !app_children.is_empty() {
+                            let win_paths = app_children
+                                .into_iter()
+                                .map(|c| c.path().to_string())
+                                .collect();
+                            target_app = Some((app_name, bus_name.to_string(), win_paths, pid));
+                            break;
+                        }
+                    }
                 }
             }
         }
 
-        let Some((app_name, bus_name, window_refs, app_pid)) = target_app else {
+        // 2. Fallback: rank visible apps to pick strictly ONE active foreground application.
+        // Never merge frames from multiple apps or pick arbitrary background apps!
+        if target_app.is_none() {
+            struct AppCandidate {
+                app_name: String,
+                bus_name: String,
+                frames: Vec<String>,
+                pid: u32,
+                score: i32,
+            }
+            let mut candidates: Vec<AppCandidate> = Vec::new();
+
+            for child in &children {
+                let Some(name) = child.name() else {
+                    continue;
+                };
+                let bus_name = name.as_str();
+                let Some(app_builder) = AccessibleProxy::builder(self.conn.connection())
+                    .destination(bus_name)
+                    .ok()
+                    .and_then(|b| b.path(child.path().as_str()).ok())
+                else {
+                    continue;
+                };
+                let Ok(app_proxy) = app_builder.build().await else {
+                    continue;
+                };
+                let app_name = app_proxy.name().await.unwrap_or_default();
+                if IGNORED_APPS
+                    .iter()
+                    .any(|&ig| app_name.eq_ignore_ascii_case(ig))
+                {
+                    continue;
+                }
+
+                let Ok(app_children) = app_proxy.get_children().await else {
+                    continue;
+                };
+                if app_children.is_empty() {
+                    continue;
+                }
+
+                let pid = if let (Some(dbus), Ok(parsed)) =
+                    (&dbus_proxy, zbus::names::BusName::try_from(bus_name))
+                {
+                    dbus.get_connection_unix_process_id(parsed)
+                        .await
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                let mut valid_frames = Vec::new();
+                let mut score = 0;
+
+                for frame_ref in app_children {
+                    let frame_path = frame_ref.path().to_string();
+                    let Some(frame_builder) = AccessibleProxy::builder(self.conn.connection())
+                        .destination(bus_name)
+                        .ok()
+                        .and_then(|b| b.path(frame_path.as_str()).ok())
+                    else {
+                        continue;
+                    };
+                    let Ok(frame_proxy) = frame_builder.build().await else {
+                        continue;
+                    };
+                    let state = frame_proxy.get_state().await.unwrap_or_default();
+                    if state.contains(atspi::State::Iconified) {
+                        continue;
+                    }
+                    if !state.contains(atspi::State::Showing)
+                        && !state.contains(atspi::State::Visible)
+                    {
+                        continue;
+                    }
+
+                    // Check size
+                    if let Some(comp_builder) = ComponentProxy::builder(self.conn.connection())
+                        .destination(bus_name)
+                        .ok()
+                        .and_then(|b| b.path(frame_path.as_str()).ok())
+                        && let Ok(comp) = comp_builder.build().await
+                        && let Ok((_fx, _fy, fw, fh)) =
+                            comp.get_extents(atspi::CoordType::Screen).await
+                        && (fw < 50 || fh < 50)
+                    {
+                        continue;
+                    }
+
+                    if state.contains(atspi::State::Active) {
+                        score += 100;
+                    }
+                    if state.contains(atspi::State::Focused) {
+                        score += 150;
+                    }
+
+                    valid_frames.push(frame_path);
+                }
+
+                if !valid_frames.is_empty() && score > 0 {
+                    candidates.push(AppCandidate {
+                        app_name,
+                        bus_name: bus_name.to_string(),
+                        frames: valid_frames,
+                        pid,
+                        score,
+                    });
+                }
+            }
+
+            if !candidates.is_empty() {
+                candidates.sort_by(|a, b| {
+                    b.score
+                        .cmp(&a.score)
+                        .then_with(|| b.frames.len().cmp(&a.frames.len()))
+                });
+                let best = candidates.remove(0);
+                target_app = Some((best.app_name, best.bus_name, best.frames, best.pid));
+            }
+        }
+
+        let Some((app_name, bus_name, window_paths, app_pid)) = target_app else {
             return Vec::new();
         };
 
         let mut all_elements = Vec::new();
 
-        for win_ref in window_refs {
-            let win_path = win_ref.path().as_str();
+        for win_path in window_paths {
+            let mut fx = 0.0;
+            let mut fy = 0.0;
+            let mut fw = 99999.0;
+            let mut fh = 99999.0;
+
+            if let Some(comp_builder) = ComponentProxy::builder(self.conn.connection())
+                .destination(bus_name.as_str())
+                .ok()
+                .and_then(|b| b.path(win_path.as_str()).ok())
+                && let Ok(comp) = comp_builder.build().await
+                && let Ok((x, y, w, h)) = comp.get_extents(atspi::CoordType::Screen).await
+                && w > 0
+                && h > 0
+            {
+                fx = f64::from(x);
+                fy = f64::from(y);
+                fw = f64::from(w);
+                fh = f64::from(h);
+            }
+
             let mut elements = Vec::new();
             self.walk_node(
                 &bus_name,
-                win_path,
+                &win_path,
                 &app_name,
                 app_pid,
                 0,
+                fx,
+                fy,
+                fw,
+                fh,
                 bounds,
                 &mut elements,
             )
@@ -208,6 +458,7 @@ impl Scanner {
     }
 
     #[async_recursion::async_recursion]
+    #[allow(clippy::too_many_arguments)]
     async fn walk_node(
         &self,
         bus_name: &str,
@@ -215,10 +466,14 @@ impl Scanner {
         app_name: &str,
         app_pid: u32,
         depth: usize,
+        frame_x: f64,
+        frame_y: f64,
+        frame_w: f64,
+        frame_h: f64,
         bounds: Option<(f64, f64, f64, f64)>,
         results: &mut Vec<AccessibleElement>,
     ) {
-        if depth > 30 || results.len() > 1500 {
+        if depth > 32 || results.len() > 1500 {
             return;
         }
 
@@ -234,63 +489,97 @@ impl Scanner {
             return;
         };
 
-        // Check extents
+        // Check extents relative to window
         let mut node_bounds = None;
         if let Some(comp_builder) = ComponentProxy::builder(self.conn.connection())
             .destination(bus_name)
             .ok()
             .and_then(|b| b.path(path).ok())
             && let Ok(comp) = comp_builder.build().await
-            && let Ok((x, y, w, h)) = comp.get_extents(atspi::CoordType::Screen).await
+            && let Ok((x, y, w, h)) = comp.get_extents(atspi::CoordType::Window).await
             && w > 0
             && h > 0
         {
             node_bounds = Some((f64::from(x), f64::from(y), f64::from(w), f64::from(h)));
         }
 
-        // Subtree spatial pruning: if bounds are specified and node is disjoint from target region at depth >= 2
-        if let (Some((nx, ny, nw, nh)), Some((bx1, bx2, by1, by2))) = (node_bounds, bounds)
-            && depth >= 2
+        // Subtree spatial pruning: if widget is outside visible frame bounds
+        if let Some((bx, by, bw, bh)) = node_bounds
+            && (bx >= frame_w || by >= frame_h || (bx + bw) <= 0.0 || (by + bh) <= 0.0)
         {
-            let disjoint = nx > bx2 || (nx + nw) < bx1 || ny > by2 || (ny + nh) < by1;
-            if disjoint {
-                return;
-            }
+            return;
         }
 
-        // Check role and actionable attributes
-        let role = node.get_role_name().await.unwrap_or_default();
-        let is_control = CONTROL_ROLES.iter().any(|&r| role.eq_ignore_ascii_case(r));
-        let is_link = role.eq_ignore_ascii_case("link");
+        // Check state: must be SHOWING (element and rendered ancestors are on screen)
+        let is_showing = match node.get_state().await {
+            Ok(states) => states.contains(atspi::State::Showing),
+            Err(_) => false,
+        };
 
-        if let Some((x, y, w, h)) = node_bounds
-            && ((is_control && w >= 10.0 && h >= 10.0) || (is_link && w >= 18.0 && h >= 12.0))
-        {
-            let cx = x + w / 2.0;
-            let cy = y + h / 2.0;
+        if is_showing {
+            let role = node.get_role_name().await.unwrap_or_default();
+            let is_control = CONTROL_ROLES.iter().any(|&r| role.eq_ignore_ascii_case(r));
+            let is_link = role.eq_ignore_ascii_case("link");
 
-            // Check bounds filter
-            let in_bounds = if let Some((bx1, bx2, by1, by2)) = bounds {
-                cx >= bx1 && cx <= bx2 && cy >= by1 && cy <= by2
-            } else {
-                true
-            };
+            if let Some((bx, by, bw, bh)) = node_bounds
+                && ((is_control && bw >= 10.0 && bh >= 10.0)
+                    || (is_link && bw >= 18.0 && bh >= 12.0))
+            {
+                // Wide element centering: for wide table cells / list items spanning full width,
+                // find inner label bounds or clamp width so the reticle targets the actual label/icon
+                let (elem_x, elem_y, elem_w, elem_h, elem_cx, elem_cy) =
+                    if (role == "table cell" || role == "list item" || role == "tree item")
+                        && bw > 120.0
+                    {
+                        if let Some((lx, ly, lw, lh)) =
+                            find_inner_label_bounds(self.conn.connection(), bus_name, path, 0).await
+                        {
+                            let start_x = bx.max(lx - 24.0);
+                            let end_x = lx + lw;
+                            let cell_w = (end_x - start_x).max(10.0);
+                            let ex = frame_x + start_x;
+                            let ey = frame_y + ly;
+                            let ew = cell_w;
+                            let eh = lh;
+                            (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
+                        } else {
+                            let ex = frame_x + bx;
+                            let ey = frame_y + by;
+                            let ew = bw.min(180.0);
+                            let eh = bh;
+                            (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
+                        }
+                    } else {
+                        let ex = frame_x + bx;
+                        let ey = frame_y + by;
+                        let ew = bw;
+                        let eh = bh;
+                        (ex, ey, ew, eh, ex + ew / 2.0, ey + eh / 2.0)
+                    };
 
-            if in_bounds {
-                let name = node.name().await.unwrap_or_default();
-                results.push(AccessibleElement {
-                    name,
-                    role: role.clone(),
-                    is_link,
-                    app_name: app_name.to_string(),
-                    app_pid,
-                    x,
-                    y,
-                    w,
-                    h,
-                    cx,
-                    cy,
-                });
+                // Check bounds filter
+                let in_bounds = if let Some((bx1, bx2, by1, by2)) = bounds {
+                    elem_cx >= bx1 && elem_cx <= bx2 && elem_cy >= by1 && elem_cy <= by2
+                } else {
+                    true
+                };
+
+                if in_bounds && 0.0 <= bx && bx < frame_w && 0.0 <= by && by < frame_h {
+                    let name = node.name().await.unwrap_or_default();
+                    results.push(AccessibleElement {
+                        name,
+                        role: role.clone(),
+                        is_link,
+                        app_name: app_name.to_string(),
+                        app_pid,
+                        x: elem_x,
+                        y: elem_y,
+                        w: elem_w,
+                        h: elem_h,
+                        cx: elem_cx,
+                        cy: elem_cy,
+                    });
+                }
             }
         }
 
@@ -304,6 +593,10 @@ impl Scanner {
                     app_name,
                     app_pid,
                     depth + 1,
+                    frame_x,
+                    frame_y,
+                    frame_w,
+                    frame_h,
                     bounds,
                     results,
                 )
@@ -461,5 +754,17 @@ mod tests {
         let res = snap_to_nearest(&[], 100.0, 100.0, 0.0, 200.0, 0.0, 200.0);
         assert!(res.candidate.is_none());
         assert!(res.all_candidates.is_empty());
+    }
+
+    #[test]
+    fn test_get_active_window_pid() {
+        let Ok(_) = zbus::block_on(async {
+            let conn = AccessibilityConnection::new().await?;
+            let pid = get_active_window_pid(&conn).await;
+            println!("Active window PID: {pid:?}");
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        }) else {
+            return;
+        };
     }
 }
