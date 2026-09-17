@@ -12,16 +12,20 @@ A fast, keyboard-first pointer navigation and accessibility layer for Linux desk
 
 ## Features
 
+- **100% Pure Rust Architecture**: Single self-contained native binary with zero GJS, Python, or typelib runtime dependencies. Consumes ~32 MB resident memory.
 - **2-Stroke Spatial Matrix**: Reach 81 discrete screen zones instantly using home-row keys (`a s d f j k l g h`).
+- **Live Pointer Coupling ("Wake on Aim")**: Dispatches OS cursor position in real-time on chord entry, waking autohiding video controls and hover elements before clicking.
+- **Hover Primitives (`p` / `P`)**: Park pointer at target without clicking (`p`), or briefly conceal overlay (`P`) to reveal and lock onto flyout dropdowns.
+- **Free Roam Mode (`f`)**: 60 Hz kinematic cursor glide with micro-tap stepping (2.5 px), quadratic acceleration, Shift Turbo, and Ctrl/Alt Crawl precision dampening.
 - **Accessible Element Snapping & Cycling (`Tab` / `Shift+Tab`)**:
   Asynchronously queries the desktop AT-SPI tree to snap reticles directly onto buttons, links, input fields, tabs, and GTK 4 Nautilus rows. Pressing `Tab` cycles through candidates within the target radius with amber badges.
 - **Instant Kinetic Scrolling (`s` / `w`)**:
   Transitions the overlay into a compact acrylic HUD pill (`560×48`), unblocking GNOME Mutter pointer focus to route wheel events directly to the underlying window without requiring manual clicks. Kinetic scrolling with `j`/`k`/`d`/`u`/`h`/`l` (`Shift` for 3× speed); press `Tab` to return cleanly to Grid Mode.
+- **Live Click & Drag / Selection (`v`)**:
+  Emits left click down at source and transitions into HUD pass-through pill for real-time text selection or window dragging.
 - **Click & Stay (`c`)**:
   Execute clicks while keeping the overlay active and responsive with animated neon-green ripple feedback—ideal for navigating menus, checklists, and dense web pages.
 - **GNOME Top Bar Mode (`t`)**: Direct targeting for Activities, Clock/Calendar, and Quick Settings.
-- **Two-Phase Drag & Drop (`v`)**: Pin a source location and drop at any destination.
-- **Pixel Micro-Nudge**: Fine-tune cursor coordinates with `h j k l` or arrow keys (`Shift` for 5× step).
 - **Warm Resident Daemon**: Background systemd user daemon maintains persistent uinput device nodes and pre-warmed GTK 4 overlay contexts (<25ms trigger latency).
 
 ---
@@ -115,7 +119,7 @@ Press **`Super+Shift+M`** (or run `notmouse overlay`) to summon the overlay.
 ## Known Limitations & Roadmap
 
 - **Multi-Monitor Setups**:
-  Pointer coordinates are mapped across the combined virtual desktop canvas. The overlay currently opens on the active monitor surface. Interactive per-monitor overlay hopping via keybinding is planned for `v0.3.0`.
+  Pointer coordinates are mapped across the combined virtual desktop canvas. The overlay currently opens on the active monitor surface. Interactive per-monitor overlay hopping via keybinding is planned for `v0.4.0`.
 - **Tiling Compositors**:
   In Sway or Hyprland, `!mouse` requires configuring a floating window rule for `app_id = "notmouse"` so the compositor does not tile the overlay as a split window.
 - **Sandboxed Applications (Flatpak / Snap)**:
