@@ -122,8 +122,44 @@ fn draw_free_roam_hud(
     let pill_w = width.min(680.0);
     let pill_h = height.min(48.0);
     let pill_x = (width - pill_w) / 2.0;
-    let pill_y = (height - pill_h) / 2.0;
+    let pill_y = if height > 100.0 {
+        24.0
+    } else {
+        (height - pill_h) / 2.0
+    };
     let radius = 12.0;
+
+    // If maximized transparent window, draw precision crosshair / reticle at current point
+    if height > 100.0
+        && let Some((px_norm, py_norm)) = state.point
+    {
+        let cx = px_norm * width;
+        let cy = py_norm * height;
+
+        cr.save().ok();
+        cr.set_source_rgba(0.20, 0.95, 0.55, 0.90);
+        cr.set_line_width(2.0);
+
+        // Reticle ring
+        cr.arc(cx, cy, 14.0, 0.0, 2.0 * std::f64::consts::PI);
+        let _ = cr.stroke();
+
+        // Crosshairs
+        cr.move_to(cx - 22.0, cy);
+        cr.line_to(cx - 5.0, cy);
+        cr.move_to(cx + 5.0, cy);
+        cr.line_to(cx + 22.0, cy);
+        cr.move_to(cx, cy - 22.0);
+        cr.line_to(cx, cy - 5.0);
+        cr.move_to(cx, cy + 5.0);
+        cr.line_to(cx, cy + 22.0);
+        let _ = cr.stroke();
+
+        // Center dot
+        cr.arc(cx, cy, 2.5, 0.0, 2.0 * std::f64::consts::PI);
+        let _ = cr.fill();
+        cr.restore().ok();
+    }
 
     // Dark acrylic glass background
     cr.set_source_rgba(0.06, 0.08, 0.14, 0.94);
@@ -155,7 +191,7 @@ fn draw_free_roam_hud(
     let drag_label = if state.dragging { " [DRAGGING]" } else { "" };
 
     let text = format!(
-        "✦ FREE ROAM{speed_label}{drag_label} — [hjkl] Glide  [Space] Click  [v] Drag  [s] Scroll  [Tab] Grid  [Esc] Done"
+        "✦ FREE ROAM{speed_label}{drag_label} — [hjkl] Glide  [Space] Click  [p] Hover  [v] Drag  [s] Scroll  [Tab] Grid  [Esc] Done"
     );
     let layout = area.create_pango_layout(Some(&text));
     let font_desc = pango::FontDescription::from_string("Sans Bold 11");

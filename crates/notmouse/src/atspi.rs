@@ -268,12 +268,24 @@ impl Scanner {
                     if let Ok(app_proxy) = app_builder.build().await {
                         let app_name = app_proxy.name().await.unwrap_or_default();
                         let app_children = app_proxy.get_children().await.unwrap_or_default();
-                        if !app_children.is_empty() {
-                            let win_paths = app_children
-                                .into_iter()
-                                .map(|c| c.path().to_string())
-                                .collect();
-                            target_app = Some((app_name, bus_name.to_string(), win_paths, pid));
+                        let mut valid_frames = Vec::new();
+                        for frame_ref in app_children {
+                            let frame_path = frame_ref.path().to_string();
+                            if let Some(comp_b) = ComponentProxy::builder(&self.conn)
+                                .destination(bus_name)
+                                .ok()
+                                .and_then(|b| b.path(frame_path.as_str()).ok())
+                                && let Ok(comp) = comp_b.build().await
+                                && let Ok((_x, _y, w, h)) =
+                                    comp.get_extents(atspi::CoordType::Screen).await
+                                && w >= 200
+                                && h >= 200
+                            {
+                                valid_frames.push(frame_path);
+                            }
+                        }
+                        if !valid_frames.is_empty() {
+                            target_app = Some((app_name, bus_name.to_string(), valid_frames, pid));
                             break;
                         }
                     }
@@ -496,7 +508,7 @@ impl Scanner {
         bounds: Option<(f64, f64, f64, f64)>,
         results: &mut Vec<AccessibleElement>,
     ) {
-        if depth > 32 || results.len() > 1500 {
+        if depth > 6 || results.len() > 800 {
             return;
         }
 
@@ -533,16 +545,44 @@ impl Scanner {
             return;
         }
 
+        // If bounds is specified and this node has known extents,
+        // prune the subtree if the node is completely outside bounds!
+        if let Some((x1, x2, y1, y2)) = bounds
+            && let Some((bx, by, bw, bh)) = node_bounds
+        {
+            let abs_x = frame_x + bx;
+            let abs_y = frame_y + by;
+            if (abs_x + bw) < x1 || abs_x > x2 || (abs_y + bh) < y1 || abs_y > y2 {
+                return;
+            }
+        }
+
         // Check state: must be SHOWING (element and rendered ancestors are on screen)
         let is_showing = match node.get_state().await {
             Ok(states) => states.contains(atspi::State::Showing),
             Err(_) => false,
         };
 
+        let mut should_recurse = true;
+
         if is_showing {
             let role = node.get_role_name().await.unwrap_or_default();
             let is_control = CONTROL_ROLES.iter().any(|&r| role.eq_ignore_ascii_case(r));
             let is_link = role.eq_ignore_ascii_case("link");
+
+            if is_control || is_link {
+                // Interactive controls (buttons, links, inputs) are terminal - do not recurse into inner graphics/labels
+                should_recurse = false;
+            } else if role.eq_ignore_ascii_case("static")
+                || role.eq_ignore_ascii_case("text")
+                || role.eq_ignore_ascii_case("image")
+                || role.eq_ignore_ascii_case("separator")
+                || role.eq_ignore_ascii_case("drawing area")
+                || role.eq_ignore_ascii_case("filler")
+            {
+                // Non-interactive leaf nodes cannot have child controls
+                should_recurse = false;
+            }
 
             if let Some((bx, by, bw, bh)) = node_bounds
                 && ((is_control && bw >= 10.0 && bh >= 10.0)
@@ -595,8 +635,8 @@ impl Scanner {
             }
         }
 
-        // Recurse into children
-        if let Ok(children) = node.get_children().await {
+        // Recurse into children only if node can contain child controls
+        if should_recurse && let Ok(children) = node.get_children().await {
             for child in children {
                 let child_path = child.path().as_str();
                 self.walk_node(

@@ -174,8 +174,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
         glib::timeout_add_local(Duration::from_millis(16), move || {
             let mut s = state.borrow_mut();
             if s.mode == OverlayMode::FreeRoam {
-                let win_w = f64::from(window.width());
-                let win_h = f64::from(window.height());
+                let (win_w, win_h) = get_workarea_dimensions(Some(&window));
                 if let Some((nx, ny)) = s.kinematics.update(0.016, win_w, win_h) {
                     s.point = Some((nx, ny));
                     emit_cursor_move(&input_device, &window, s.mode, nx, ny);
@@ -265,8 +264,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
 
             // ── FREE ROAM MODE ───────────────────────────────────────────────
             if s.mode == OverlayMode::FreeRoam {
-                let win_w = f64::from(window.width());
-                let win_h = f64::from(window.height());
+                let (win_w, win_h) = get_workarea_dimensions(Some(&window));
 
                 match keyval {
                     Key::Escape | Key::q => {
@@ -279,6 +277,10 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     }
                     Key::Tab => {
                         // Return to Fullscreen Grid mode
+                        if s.dragging {
+                            emit_release(&input_device, MouseButton::Left);
+                            s.dragging = false;
+                        }
                         s.mode = OverlayMode::Grid;
                         show_overlay_window(&window);
                         drawing_area.queue_draw();
@@ -353,13 +355,24 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                             s.dragging = true;
                             s.drag_start_point = s.point;
                             emit_press(&input_device, MouseButton::Left);
+                            window.unmaximize();
+                            window.set_default_size(680, 48);
                             drawing_area.queue_draw();
                         }
                         return glib::Propagation::Stop;
                     }
                     Key::p => {
-                        // Point & Hover: dismiss immediately leaving cursor positioned
-                        dismiss_overlay(&window, &app, is_resident);
+                        // Point & Hover: dismiss immediately leaving cursor positioned, then emit hover motion
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "point",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     Key::s | Key::w => {
@@ -586,33 +599,55 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                     }
                     // Hover primitives
                     Key::p => {
-                        // Point & Hover: cursor is already coupled! Just dismiss window.
-                        dismiss_overlay(&window, &app, is_resident);
+                        emit_selection(
+                            &input_device,
+                            &window,
+                            &app,
+                            is_resident,
+                            s.mode,
+                            &s.path,
+                            "point",
+                            s.point,
+                        );
                         return glib::Propagation::Stop;
                     }
                     Key::P => {
-                        // Hover & Stay: temporarily hide window so underlying app opens flyout
+                        let (sx, sy) = s.point.map_or_else(
+                            || map_window_to_screen(&window, s.mode, 0.5, 0.5),
+                            |(nx, ny)| map_window_to_screen(&window, s.mode, nx, ny),
+                        );
                         window.set_visible(false);
+
+                        let inp_for_move = input_device.clone();
+                        glib::timeout_add_local(Duration::from_millis(80), move || {
+                            let evt = OverlayEvent::Move { x: sx, y: sy };
+                            if !crate::session::send_event(&evt).unwrap_or(false)
+                                && let Some(ref mut dev) = *inp_for_move.borrow_mut()
+                            {
+                                let _ = dev.move_to_normalized(sx, sy);
+                            }
+                            glib::ControlFlow::Break
+                        });
+
                         let w_clone = window.clone();
                         let da_clone = drawing_area.clone();
                         let s_clone = state.clone();
-                        glib::timeout_add_local(Duration::from_millis(120), move || {
+                        let inp_for_scan = input_device.clone();
+                        glib::timeout_add_local(Duration::from_millis(260), move || {
                             w_clone.set_visible(true);
                             w_clone.present();
                             da_clone.grab_focus();
                             da_clone.queue_draw();
-                            trigger_background_scan(&s_clone, &da_clone, &w_clone);
+                            trigger_background_scan(&s_clone, &da_clone, &w_clone, &inp_for_scan);
                             glib::ControlFlow::Break
                         });
                         return glib::Propagation::Stop;
                     }
                     // Free roam from locked target
-                    Key::f => {
+                    Key::f | Key::F | Key::z => {
                         s.mode = OverlayMode::FreeRoam;
                         let initial = s.point.unwrap_or((0.5, 0.5));
                         s.kinematics = FreeRoamKinematics::new(initial.0, initial.1);
-                        window.unmaximize();
-                        window.set_default_size(680, 48);
                         drawing_area.queue_draw();
                         return glib::Propagation::Stop;
                     }
@@ -655,6 +690,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                         let w_clone = window.clone();
                         let da_clone = drawing_area.clone();
                         let s_clone = state.clone();
+                        let inp_clone = input_device.clone();
 
                         let restore_delay_ms = if was_link { 600 } else { 180 };
                         glib::timeout_add_local(
@@ -664,7 +700,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                                 w_clone.present();
                                 da_clone.grab_focus();
                                 da_clone.queue_draw();
-                                trigger_background_scan(&s_clone, &da_clone, &w_clone);
+                                trigger_background_scan(&s_clone, &da_clone, &w_clone, &inp_clone);
                                 glib::ControlFlow::Break
                             },
                         );
@@ -765,14 +801,27 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
                 return glib::Propagation::Stop;
             }
 
-            // Stroke 1 Free Roam mode shortcut (f)
-            if s.path.is_empty() && keyval == Key::f {
+            // Free Roam mode shortcut (z or Shift+F) on initial grid
+            if s.path.is_empty() && (keyval == Key::z || keyval == Key::F) {
                 s.mode = OverlayMode::FreeRoam;
                 let initial = s.point.unwrap_or((0.5, 0.5));
                 s.kinematics = FreeRoamKinematics::new(initial.0, initial.1);
-                window.unmaximize();
-                window.set_default_size(680, 48);
                 drawing_area.queue_draw();
+                return glib::Propagation::Stop;
+            }
+
+            // Quick point/hover (p) on stroke 0 or 1
+            if s.path.len() <= 1 && keyval == Key::p {
+                emit_selection(
+                    &input_device,
+                    &window,
+                    &app,
+                    is_resident,
+                    s.mode,
+                    &s.path,
+                    "point",
+                    s.point,
+                );
                 return glib::Propagation::Stop;
             }
 
@@ -882,7 +931,12 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
     window.set_child(Some(&drawing_area));
 
     if is_resident {
-        setup_overlay_socket(state.clone(), window.clone(), drawing_area.clone());
+        setup_overlay_socket(
+            state.clone(),
+            window.clone(),
+            drawing_area.clone(),
+            &input_device,
+        );
         // Pre-warm Wayland surface and GTK pipeline invisibly
         window.set_opacity(0.0);
         show_overlay_window(&window);
@@ -898,7 +952,7 @@ fn build_ui(application: &gtk4::Application, is_resident: bool) {
         drawing_area.grab_focus();
 
         // Trigger initial background AT-SPI scan
-        trigger_background_scan(&state, &drawing_area, &window);
+        trigger_background_scan(&state, &drawing_area, &window, &input_device);
     }
 }
 
@@ -919,6 +973,7 @@ fn setup_overlay_socket(
     state: Rc<RefCell<State>>,
     window: gtk4::ApplicationWindow,
     drawing_area: gtk4::DrawingArea,
+    input_device: &Rc<RefCell<Option<InputDevice>>>,
 ) {
     let sock_path = crate::session::overlay_socket_path();
     let _ = std::fs::remove_file(&sock_path);
@@ -954,6 +1009,7 @@ fn setup_overlay_socket(
         }
     });
 
+    let inp = input_device.clone();
     glib::timeout_add_local(Duration::from_millis(20), move || {
         if let Ok(target_pid) = rx.try_recv() {
             {
@@ -978,7 +1034,7 @@ fn setup_overlay_socket(
             show_overlay_window(&window);
             drawing_area.grab_focus();
             drawing_area.queue_draw();
-            trigger_background_scan(&state, &drawing_area, &window);
+            trigger_background_scan(&state, &drawing_area, &window, &inp);
         }
         glib::ControlFlow::Continue
     });
@@ -988,6 +1044,7 @@ fn trigger_background_scan(
     state: &Rc<RefCell<State>>,
     drawing_area: &gtk4::DrawingArea,
     window: &gtk4::ApplicationWindow,
+    input_device: &Rc<RefCell<Option<InputDevice>>>,
 ) {
     let (tx, rx) = std::sync::mpsc::channel::<Vec<AccessibleElement>>();
     let target_pid = state.borrow().target_pid;
@@ -1005,6 +1062,7 @@ fn trigger_background_scan(
     let state = state.clone();
     let da = drawing_area.clone();
     let win = window.clone();
+    let inp = input_device.clone();
 
     glib::timeout_add_local(Duration::from_millis(40), move || {
         if let Ok(elements) = rx.try_recv() {
@@ -1043,6 +1101,9 @@ fn trigger_background_scan(
                     s.snapped_element = Some(candidate);
                     s.snap_candidates = snap_res.all_candidates;
                     s.snap_index = snap_res.index;
+
+                    // Magnetic cursor snap dispatch
+                    emit_cursor_move(&inp, &win, s.mode, nx, ny);
                 }
             }
             da.queue_draw();
@@ -1113,6 +1174,18 @@ fn get_desktop_bounds() -> (f64, f64, f64, f64) {
     )
 }
 
+fn get_workarea_dimensions(window: Option<&gtk4::ApplicationWindow>) -> (f64, f64) {
+    if let Some(mon) = get_active_monitor(window) {
+        let geom = mon.geometry();
+        (
+            f64::from(geom.width()),
+            f64::from((geom.height() - 29).max(100)),
+        )
+    } else {
+        (1920.0, 1051.0)
+    }
+}
+
 fn map_window_to_screen(
     window: &gtk4::ApplicationWindow,
     mode: OverlayMode,
@@ -1127,18 +1200,23 @@ fn map_window_to_screen(
     let raw_w = window.width();
     let raw_h = window.height();
 
-    let (win_w, offset_x) = if raw_w > 0 {
-        (f64::from(raw_w), f64::from((geom.width() - raw_w).max(0)))
+    let is_fullscreen_workarea = raw_w >= geom.width() && raw_h >= geom.height() - 64;
+    let (win_w, win_h, offset_x, offset_y) = if is_fullscreen_workarea {
+        (
+            f64::from(raw_w),
+            f64::from(raw_h),
+            0.0,
+            f64::from((geom.height() - raw_h).max(0)),
+        )
     } else {
-        (f64::from(geom.width()), 0.0)
-    };
-
-    let (win_h, offset_y) = if raw_h > 0 {
-        (f64::from(raw_h), f64::from((geom.height() - raw_h).max(0)))
-    } else {
-        // When unmapped or hidden, GTK 4 reports 0 for window dimensions.
-        // Fall back to standard workarea (monitor height minus top panel e.g. 29px)
-        (f64::from(geom.height() - 29), 29.0)
+        // Shrunk HUD pill mode (Scroll, Drag, or hidden):
+        // win_norm_x and win_norm_y are relative to the monitor's workarea canvas!
+        (
+            f64::from(geom.width()),
+            f64::from((geom.height() - 29).max(100)),
+            0.0,
+            29.0,
+        )
     };
 
     let pixel_x = win_norm_x * win_w;

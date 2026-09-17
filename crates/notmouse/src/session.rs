@@ -260,6 +260,7 @@ pub fn parse_button(name: &str) -> MouseButton {
 /// Dispatches an action command string on the given device.
 pub fn execute_action(device: &mut InputDevice, action: &str) -> Result<(), String> {
     match action {
+        "point" | "hover" | "none" => Ok(()),
         "click" => device
             .click(MouseButton::Left)
             .map_err(|err| format!("click failed: {err}")),
